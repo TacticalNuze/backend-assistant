@@ -194,7 +194,7 @@ class GetFiles:
         
         async def _get_legacy_files():
             storage = MinIOStorageManager(
-                endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"),
+                endpoint=os.getenv("MINIO_ENDPOINT", "localhost:"),
                 access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
                 secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
                 secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
@@ -281,7 +281,7 @@ class GetFiles:
     async def _get_files_by_project(self, client_id: str, project_id: str) -> List[Dict[str, Any]]:
         """Retrieve all raw files from a project in MinIO without parsing."""
         storage = MinIOStorageManager(
-            endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"),
+            endpoint=os.getenv("MINIO_ENDPOINT", "localhost:"),
             access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
             secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
             secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
