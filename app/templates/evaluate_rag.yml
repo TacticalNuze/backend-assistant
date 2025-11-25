@@ -1,12 +1,12 @@
 defaults: &defaults
-  template_id: vector_inference
+  template_id: evaluate_rag
   prompt_config:
     source: langfuse
     organization_name: dxc
     project_name: d.pac
   database: default
 
-task: vector_inference
+task: evaluate_rag
 <<: *defaults
 inputs:
   - client_id
@@ -84,6 +84,14 @@ steps:
       - fetch_chat_history
       - fetch_user_facts
       - language
+    queue: io_queue
+  - step: evaluate_rag_with_ragas
+    pipeline_key: evaluate_rag_with_ragas
+    inputs:
+      - input_text
+      - run_vector_rag
+      - search_relevant_chunks
+      # Optional: - reference (if you have ground truth)
     queue: io_queue
   - step: combine_vector_response_and_references
     pipeline_key: combine_vector_response_and_references

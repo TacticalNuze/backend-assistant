@@ -19,9 +19,9 @@ from libs.database_service.sql_db.providers import PgSQLProvider
 from libs.llm_service.utils import parse_llm_json_response, safe_literal_eval, flatten_dict
 from libs.chunking_service.service import ChunkingGeneratorInterface
 from libs.chunking_service.models import ChunkingConfig, ChunkingMethod
+from libs.ragas_service.langfuse_tracing import score_with_ragas, map_rag_output_to_score_fields
 
 logger = logging.getLogger(__name__)
-
 
 def get_input_hash(inputs: Dict[str, Any], project_name: str, prompt_config_src: str, pipeline_key: str) -> Tuple[str, str]:
     formatted_input_data = json.dumps(inputs, sort_keys=True)
@@ -1743,6 +1743,139 @@ class CombineVectorResponseAndReferences:
             "references": references_json,
         }
 
+
+class EvaluateRAGWithRagas:
+    """
+    Evaluate RAG response using RAGAS metrics with Langfuse tracing.
+    
+    Inputs expected:
+      - input_text: The user query/question (required)
+      - run_vector_rag: The LLM response (required)
+      - search_relevant_chunks: Object with 'relevant_chunks' list (required)
+      - reference: Optional ground truth/reference answer for evaluation
+    
+    Output:
+      {
+        "ragas_scores": {
+          "ContextPrecision": float,
+          "ContextRecall": float,
+          "ContextRelevance": float
+        },
+        "evaluation_metadata": {
+          "num_contexts": int,
+          "has_reference": bool,
+          "trace_id": str (if Langfuse tracing enabled)
+        }
+      }
+    """
+    
+    def __init__(self, inputs: Dict[str, Any], project_name: str, prompt_config_src: str, pipeline_key: str):
+        self.inputs = inputs
+        self.project_name = project_name
+        self.prompt_config_src = prompt_config_src
+        self.pipeline_key = pipeline_key
+    
+    def execute(self) -> Dict[str, Any]:
+        """Execute RAGAS evaluation on RAG response"""
+        logger.info('########################## EvaluateRAGWithRagas ##########################')
+        logger.info(f'{self.pipeline_key=}')
+        
+        try:
+            # Extract required inputs
+            user_input = self.inputs.get("input_text")
+            llm_response = self.inputs.get("run_vector_rag")
+            
+            # Extract retrieved contexts from search_relevant_chunks
+            search_result = self.inputs.get("search_relevant_chunks", {}) or {}
+            relevant_chunks = search_result.get("relevant_chunks", []) or []
+            
+            # Extract optional reference (ground truth)
+            reference = self.inputs.get("reference") or self.inputs.get("ground_truth")
+            
+            # Validate required inputs
+            if not user_input:
+                logger.warning("Missing required input: input_text")
+                return {
+                    "ragas_scores": {},
+                    "evaluation_metadata": {
+                        "error": "Missing input_text",
+                        "num_contexts": 0,
+                        "has_reference": False
+                    }
+                }
+            
+            if not llm_response:
+                logger.warning("Missing required input: run_vector_rag")
+                return {
+                    "ragas_scores": {},
+                    "evaluation_metadata": {
+                        "error": "Missing run_vector_rag",
+                        "num_contexts": 0,
+                        "has_reference": False
+                    }
+                }
+            
+            # Convert LLM response to string if needed
+            if isinstance(llm_response, (dict, list)):
+                response_text = json.dumps(llm_response, ensure_ascii=False)
+            else:
+                response_text = str(llm_response).strip()
+            
+            # Extract text from relevant chunks
+            retrieved_contexts = []
+            for chunk in relevant_chunks:
+                # Handle different chunk formats
+                chunk_text = (
+                    chunk.get("text") or
+                    chunk.get("content") or
+                    (chunk.get("metadata") or {}).get("text") or
+                    (chunk.get("metadata") or {}).get("content") or
+                    str(chunk)
+                )
+                if chunk_text:
+                    retrieved_contexts.append(str(chunk_text))
+            
+            logger.info(f"Evaluating RAG response with {len(retrieved_contexts)} contexts")
+            if reference:
+                logger.info("Reference/ground truth provided for evaluation")
+            
+            # Run RAGAS evaluation asynchronously
+            scores = asyncio.run(
+                score_with_ragas(
+                    user_input=user_input,
+                    retrieved_contexts=retrieved_contexts,
+                    response=response_text,
+                    reference=reference
+                )
+            )
+            
+            logger.info(f"RAGAS evaluation completed. Scores: {scores}")
+            
+            return {
+                "ragas_scores": scores,
+                "evaluation_metadata": {
+                    "num_contexts": len(retrieved_contexts),
+                    "has_reference": reference is not None,
+                    "user_input": user_input,
+                    "response_length": len(response_text)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in RAGAS evaluation: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            return {
+                "ragas_scores": {},
+                "evaluation_metadata": {
+                    "error": str(e),
+                    "num_contexts": 0,
+                    "has_reference": False
+                }
+            }
+
+
 class PassThrough:
     """Pass through the input unchanged - useful for pipeline debugging or data flow"""
     
@@ -1781,6 +1914,7 @@ pipeline_operations: Dict[str, Any] = {
     "fetch_chat_history": FetchChatHistory,
     # Utility operations
     "combine_vector_response_and_references": CombineVectorResponseAndReferences,
+    "evaluate_rag_with_ragas": EvaluateRAGWithRagas,
     "PassThrough": PassThrough,
 }
 

@@ -1,0 +1,157 @@
+{
+  "examples": {
+    "basic_inference_request": {
+      "description": "Basic inference request with minimal required fields",
+      "endpoint": "POST /api/chat/vector_inference",
+      "payload": {
+        "input": {
+          "workflow_id": "inference_001",
+          "client_id": "dpac",
+          "project_id": "dpac_portal",
+          "session_id": "session_123",
+          "user_id": "user_456",
+          "input_text": "What is the D.PaC?",
+          "language": "en",
+          "top_k": 5,
+          "limit": 10
+        }
+      }
+    },
+    
+    "italian_inference_request": {
+      "description": "Italian language inference request (from example in schemas.py)",
+      "endpoint": "POST /api/chat/vector_inference",
+      "payload": {
+        "input": {
+          "workflow_id": "vector_inference_001",
+          "client_id": "dpac",
+          "domain_id": "dpac",
+          "input_text": "cos'è il D.PaC?",
+          "language": "it",
+          "project_id": "dpac_portal",
+          "session_id": "test_session_001",
+          "user_id": "user123",
+          "top_k": 5,
+          "limit": 10
+        }
+      }
+    },
+    
+    "french_inference_request": {
+      "description": "French language inference request",
+      "endpoint": "POST /api/chat/vector_inference",
+      "payload": {
+        "input": {
+          "workflow_id": "inference_fr_001",
+          "client_id": "dpac",
+          "project_id": "dpac_portal",
+          "session_id": "session_fr_123",
+          "user_id": "user_fr_456",
+          "input_text": "Qu'est-ce que le D.PaC?",
+          "language": "fr",
+          "top_k": 5,
+          "limit": 10
+        }
+      }
+    },
+    
+    "custom_top_k_request": {
+      "description": "Request with custom top_k for more/fewer search results",
+      "endpoint": "POST /api/chat/vector_inference",
+      "payload": {
+        "input": {
+          "workflow_id": "inference_custom_001",
+          "client_id": "testclient",
+          "project_id": "testproject",
+          "session_id": "session_custom_123",
+          "user_id": "user_custom_456",
+          "input_text": "Explain the main features of the system",
+          "language": "en",
+          "top_k": 10,
+          "limit": 20
+        }
+      }
+    },
+    
+    "minimal_request": {
+      "description": "Minimal request with only required fields (workflow_id is optional but recommended)",
+      "endpoint": "POST /api/chat/vector_inference",
+      "payload": {
+        "input": {
+          "client_id": "testclient",
+          "project_id": "testproject",
+          "session_id": "session_min_123",
+          "user_id": "user_min_456",
+          "input_text": "Hello, how can you help me?",
+          "language": "en",
+          "top_k": 5,
+          "limit": 10
+        }
+      }
+    }
+  },
+  
+  "field_descriptions": {
+    "workflow_id": "Optional: Unique identifier for tracking this workflow execution",
+    "client_id": "Required: Client/organization identifier",
+    "project_id": "Required: Project identifier within the client",
+    "session_id": "Required: Session identifier for conversation continuity",
+    "user_id": "Required: User identifier",
+    "input_text": "Required: The user's question or input text",
+    "language": "Required: Language code ('en', 'it', 'fr') - auto-injects domain_id",
+    "top_k": "Required: Number of most relevant chunks to retrieve (default: 5)",
+    "limit": "Required: Number of chat history messages to fetch (default: 10)",
+    "domain_id": "Optional: Domain identifier (auto-injected based on language if not provided)"
+  },
+  
+  "curl_examples": {
+    "basic_curl": "curl -X POST \"http://localhost:8002/api/chat/vector_inference\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"input\": {\n      \"workflow_id\": \"inference_001\",\n      \"client_id\": \"dpac\",\n      \"project_id\": \"dpac_portal\",\n      \"session_id\": \"session_123\",\n      \"user_id\": \"user_456\",\n      \"input_text\": \"What is the D.PaC?\",\n      \"language\": \"en\",\n      \"top_k\": 5,\n      \"limit\": 10\n    }\n  }'",
+    
+    "italian_curl": "curl -X POST \"http://localhost:8002/api/chat/vector_inference\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"input\": {\n      \"workflow_id\": \"vector_inference_001\",\n      \"client_id\": \"dpac\",\n      \"input_text\": \"cos'è il D.PaC?\",\n      \"language\": \"it\",\n      \"project_id\": \"dpac_portal\",\n      \"session_id\": \"test_session_001\",\n      \"user_id\": \"user123\",\n      \"top_k\": 5,\n      \"limit\": 10\n    }\n  }'"
+  },
+  
+  "python_requests_example": {
+    "code": "import requests\n\nurl = \"http://localhost:8002/api/chat/vector_inference\"\n\npayload = {\n    \"input\": {\n        \"workflow_id\": \"inference_001\",\n        \"client_id\": \"dpac\",\n        \"project_id\": \"dpac_portal\",\n        \"session_id\": \"session_123\",\n        \"user_id\": \"user_456\",\n        \"input_text\": \"What is the D.PaC?\",\n        \"language\": \"en\",\n        \"top_k\": 5,\n        \"limit\": 10\n    }\n}\n\nresponse = requests.post(url, json=payload)\nprint(response.json())"
+  },
+  
+  "response_example": {
+    "description": "Expected response structure",
+    "response": {
+      "workflow_id": "inference_001",
+      "tasks": [
+        {
+          "step_name": "save_user_message",
+          "pipeline_key": "save_user_message",
+          "task_id": "abc123-def456-ghi789",
+          "queue": "io_queue",
+          "status": "PENDING"
+        },
+        {
+          "step_name": "fetch_user_facts",
+          "pipeline_key": "fetch_user_facts",
+          "task_id": "jkl012-mno345-pqr678",
+          "queue": "io_queue",
+          "status": "PENDING"
+        }
+      ]
+    }
+  },
+  
+  "notes": [
+    "The 'language' field automatically injects 'domain_id' based on the value:",
+    "  - 'en' -> 'en_dpac'",
+    "  - 'it' -> 'it_dpac'",
+    "  - 'fr' -> 'fr_dpac'",
+    "",
+    "To check task status, use: GET /api/results/{task_id}",
+    "",
+    "The final result will be in the last task (usually 'save_vector_llm_message')",
+    "",
+    "All tasks run asynchronously via Celery workers"
+  ]
+}
+
+
+
+
+

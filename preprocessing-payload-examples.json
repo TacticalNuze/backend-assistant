@@ -1,0 +1,244 @@
+{
+  "examples": {
+    "basic_preprocessing_request": {
+      "description": "Basic preprocessing request with required fields",
+      "endpoint": "POST /api/workflow/vector_preprocessing",
+      "payload": {
+        "input": {
+          "workflow_id": "preprocessing_001",
+          "client_id": "dpac",
+          "project_id": "dpac_portal_test_1",
+          "language": "en",
+          "embedding_model": "text-embedding-3-large",
+          "embedding_provider": "azure_openai",
+          "embedding_batch_size": 100
+        }
+      }
+    },
+    
+    "italian_preprocessing_request": {
+      "description": "Italian language preprocessing (from example in schemas.py)",
+      "endpoint": "POST /api/workflow/vector_preprocessing",
+      "payload": {
+        "input": {
+          "workflow_id": "vector_preprocessing_001",
+          "client_id": "dpac",
+          "domain_id": "dpac",
+          "language": "it",
+          "project_id": "dpac_portal_test_1",
+          "chunking_method": "semantic_chunker",
+          "embedding_model": "text-embedding-3-large",
+          "embedding_provider": "azure_openai",
+          "embedding_batch_size": 10
+        }
+      }
+    },
+    
+    "french_preprocessing_request": {
+      "description": "French language preprocessing",
+      "endpoint": "POST /api/workflow/vector_preprocessing",
+      "payload": {
+        "input": {
+          "workflow_id": "preprocessing_fr_001",
+          "client_id": "dpac",
+          "project_id": "dpac_portal_fr",
+          "language": "fr",
+          "embedding_model": "text-embedding-3-large",
+          "embedding_provider": "azure_openai",
+          "embedding_batch_size": 50
+        }
+      }
+    },
+    
+    "openai_provider_request": {
+      "description": "Using OpenAI provider instead of Azure OpenAI",
+      "endpoint": "POST /api/workflow/vector_preprocessing",
+      "payload": {
+        "input": {
+          "workflow_id": "preprocessing_openai_001",
+          "client_id": "testclient",
+          "project_id": "testproject",
+          "language": "en",
+          "embedding_model": "text-embedding-3-large",
+          "embedding_provider": "openai",
+          "embedding_batch_size": 100
+        }
+      }
+    },
+    
+    "large_batch_request": {
+      "description": "Request with larger batch size for faster processing",
+      "endpoint": "POST /api/workflow/vector_preprocessing",
+      "payload": {
+        "input": {
+          "workflow_id": "preprocessing_large_001",
+          "client_id": "testclient",
+          "project_id": "testproject",
+          "language": "en",
+          "embedding_model": "text-embedding-3-large",
+          "embedding_provider": "azure_openai",
+          "embedding_batch_size": 200
+        }
+      }
+    },
+    
+    "minimal_request": {
+      "description": "Minimal request with only required fields",
+      "endpoint": "POST /api/workflow/vector_preprocessing",
+      "payload": {
+        "input": {
+          "client_id": "testclient",
+          "project_id": "testproject",
+          "language": "en",
+          "embedding_model": "text-embedding-3-large",
+          "embedding_provider": "azure_openai",
+          "embedding_batch_size": 100
+        }
+      }
+    }
+  },
+  
+  "field_descriptions": {
+    "workflow_id": "Optional: Unique identifier for tracking this workflow execution",
+    "client_id": "Required: Client/organization identifier (used to locate files in MinIO bucket)",
+    "project_id": "Required: Project identifier within the client (used as prefix in MinIO: client_id/project_id/)",
+    "language": "Required: Language code ('en', 'it', 'fr') - auto-injects domain_id and affects collection naming",
+    "embedding_model": "Required: Embedding model name (e.g., 'text-embedding-3-large', 'text-embedding-ada-002')",
+    "embedding_provider": "Required: Provider name ('azure_openai', 'openai', or other supported providers)",
+    "embedding_batch_size": "Required: Number of chunks to process in each batch (recommended: 50-200)",
+    "domain_id": "Optional: Domain identifier (auto-injected based on language if not provided)",
+    "chunking_method": "Optional: Chunking method (e.g., 'semantic_chunker', 'token_chunker', 'sentence_chunker')"
+  },
+  
+  "workflow_steps": {
+    "description": "The preprocessing workflow executes these steps in order:",
+    "steps": [
+      {
+        "step": "GetFiles",
+        "description": "Retrieves all files from MinIO storage (bucket: client_id, prefix: project_id/)"
+      },
+      {
+        "step": "parse_documents",
+        "description": "Parses raw files into text content (supports PDF, TXT, MD, DOCX, JSON)"
+      },
+      {
+        "step": "chunk_documents",
+        "description": "Splits documents into smaller chunks for processing"
+      },
+      {
+        "step": "generate_embeddings",
+        "description": "Generates vector embeddings for each chunk (runs in parallel)"
+      },
+      {
+        "step": "store_chunks_in_vector_db",
+        "description": "Stores chunks with embeddings in ChromaDB (runs in parallel)"
+      },
+      {
+        "step": "save_mapping_to_document_db",
+        "description": "Saves chunk-to-file mappings in Elasticsearch (runs in parallel)"
+      },
+      {
+        "step": "pass_through",
+        "description": "Final step that passes results through unchanged"
+      }
+    ]
+  },
+  
+  "curl_examples": {
+    "basic_curl": "curl -X POST \"http://localhost:8002/api/workflow/vector_preprocessing\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"input\": {\n      \"workflow_id\": \"preprocessing_001\",\n      \"client_id\": \"dpac\",\n      \"project_id\": \"dpac_portal_test_1\",\n      \"language\": \"en\",\n      \"embedding_model\": \"text-embedding-3-large\",\n      \"embedding_provider\": \"azure_openai\",\n      \"embedding_batch_size\": 100\n    }\n  }'",
+    
+    "italian_curl": "curl -X POST \"http://localhost:8002/api/workflow/vector_preprocessing\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"input\": {\n      \"workflow_id\": \"vector_preprocessing_001\",\n      \"client_id\": \"dpac\",\n      \"domain_id\": \"dpac\",\n      \"language\": \"it\",\n      \"project_id\": \"dpac_portal_test_1\",\n      \"chunking_method\": \"semantic_chunker\",\n      \"embedding_model\": \"text-embedding-3-large\",\n      \"embedding_provider\": \"azure_openai\",\n      \"embedding_batch_size\": 10\n    }\n  }'"
+  },
+  
+  "python_requests_example": {
+    "code": "import requests\n\nurl = \"http://localhost:8002/api/workflow/vector_preprocessing\"\n\npayload = {\n    \"input\": {\n        \"workflow_id\": \"preprocessing_001\",\n        \"client_id\": \"dpac\",\n        \"project_id\": \"dpac_portal_test_1\",\n        \"language\": \"en\",\n        \"embedding_model\": \"text-embedding-3-large\",\n        \"embedding_provider\": \"azure_openai\",\n        \"embedding_batch_size\": 100\n    }\n}\n\nresponse = requests.post(url, json=payload)\nprint(response.json())"
+  },
+  
+  "response_example": {
+    "description": "Expected response structure",
+    "response": {
+      "workflow_id": "preprocessing_001",
+      "tasks": [
+        {
+          "step_name": "GetFiles",
+          "pipeline_key": "GetFiles",
+          "task_id": "abc123-def456-ghi789",
+          "queue": "localAPI_queue",
+          "status": "PENDING"
+        },
+        {
+          "step_name": "parse_documents",
+          "pipeline_key": "ParseDocuments",
+          "task_id": "jkl012-mno345-pqr678",
+          "queue": "localAPI_queue",
+          "status": "PENDING"
+        },
+        {
+          "step_name": "chunk_documents",
+          "pipeline_key": "chunk_documents",
+          "task_id": "stu901-vwx234-yza567",
+          "queue": "localAPI_queue",
+          "status": "PENDING"
+        },
+        {
+          "step_name": "generate_embeddings",
+          "pipeline_key": "GenerateChunkEmbeddings",
+          "task_id": "bcd890-efg123-hij456",
+          "queue": "localAPI_queue",
+          "status": "PENDING"
+        },
+        {
+          "step_name": "store_chunks_in_vector_db",
+          "pipeline_key": "StoreChunksInVectorDB",
+          "task_id": "klm789-nop012-qrs345",
+          "queue": "localAPI_queue",
+          "status": "PENDING"
+        },
+        {
+          "step_name": "save_mapping_to_document_db",
+          "pipeline_key": "save_mapping_to_document_db",
+          "task_id": "tuv678-wxy901-zab234",
+          "queue": "localAPI_queue",
+          "status": "PENDING"
+        },
+        {
+          "step_name": "pass_through",
+          "pipeline_key": "PassThrough",
+          "task_id": "cde567-fgh890-ijk123",
+          "queue": "localAPI_queue",
+          "status": "PENDING"
+        }
+      ]
+    }
+  },
+  
+  "important_notes": [
+    "Files must be uploaded to MinIO before running preprocessing:",
+    "  - Bucket name: {client_id}",
+    "  - Object prefix: {project_id}/",
+    "  - Example: 'dpac/dpac_portal_test_1/document.pdf'",
+    "",
+    "The 'language' field automatically injects 'domain_id' based on the value:",
+    "  - 'en' -> 'en_dpac'",
+    "  - 'it' -> 'it_dpac'",
+    "  - 'fr' -> 'fr_dpac'",
+    "",
+    "Supported file formats: PDF, TXT, MD, DOCX, JSON",
+    "",
+    "Embedding batch size recommendations:",
+    "  - Small projects (< 1000 chunks): 10-50",
+    "  - Medium projects (1000-10000 chunks): 50-100",
+    "  - Large projects (> 10000 chunks): 100-200",
+    "",
+    "To check task status, use: GET /api/results/{task_id}",
+    "",
+    "The final result will be in the last task (usually 'pass_through')",
+    "",
+    "All tasks run asynchronously via Celery workers"
+  ]
+}
+
+
+
+
+
