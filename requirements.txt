@@ -994,4 +994,19 @@ zope-interface==8.0.1
     # via gevent
 zstandard==0.25.0
     # via langsmith
+# Requirements for langfuse_implement.py
+# RAG Evaluation Service with Langfuse Tracing
+
+# Core dependencies
+datasets>=2.14.0
+python-dotenv>=1.0.0
+langfuse>=3.7.0
+openai>=2.4.0
+
+# LangChain for embeddings
+langchain-openai>=0.2.0
+
+# Ragas for RAG evaluation metrics
+ragas>=0.1.0
+
 

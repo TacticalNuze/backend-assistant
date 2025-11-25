@@ -8,7 +8,7 @@ and object storage (MinIO).
 
 from .storage import MinIOStorageManager
 from .store_results import StoreResults, get_store_results
-from .vector_db import WeaviateVectorProvider, ChromaVectorProvider
+from .vector_db import  ChromaVectorProvider
 from .doc_db import ElasticsearchDocProvider
 from .models import VectorIndexConfig
 from .service import DatabaseService

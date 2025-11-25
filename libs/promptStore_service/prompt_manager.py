@@ -596,7 +596,7 @@ class LangfusePromptManager:
         transformed = variables.copy()
         logger.info('############################## LangfusePromptManager._transform_inputs_to_prompt_format ###############################')
         logger.info(f'{transformed=}')
-
+        
         if pipeline_key == "run-vector-rag":
             # Transform inputs for naive RAG inference
             # Get relevant chunks from search_relevant_chunks
@@ -668,7 +668,8 @@ class LangfusePromptManager:
             else:
                 transformed["extract_user_facts"] = "No user facts available."
                 logger.warning("fetch_user_facts is not a valid dict")
-        
+        #elif pipeline_key == "pipeline_key in yaml file, same as prompt in langfuse":
+
         return transformed
 
     def clear_cache(self):

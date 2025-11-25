@@ -24,7 +24,6 @@ import os
 import logging
 from typing import Dict, List, Any, Optional
 from .base import BaseVectorProvider
-from .weaviate_provider import WeaviateVectorProvider
 from .chroma_provider import ChromaVectorProvider
 from ..models import VectorDocument
 
@@ -89,7 +88,6 @@ class VectorDatabaseService(BaseVectorProvider):
         try:
             # Factory pattern for creating vector database providers
             provider_factory = {
-                "weaviate": self._create_weaviate_provider,
                 "chroma": self._create_chroma_provider,
                 "chromadb": self._create_chroma_provider,  # Alias for chroma
             }
@@ -106,22 +104,6 @@ class VectorDatabaseService(BaseVectorProvider):
             logger.error(f"Failed to create vector database provider: {e}")
             return None
     
-    def _create_weaviate_provider(self) -> WeaviateVectorProvider:
-        """Create a Weaviate provider instance"""
-        
-        weaviate_url = os.getenv("WEAVIATE_URL", "http://localhost:8082")
-        weaviate_api_key = os.getenv("WEAVIATE_API_KEY")
-        collection_name = os.getenv("WEAVIATE_COLLECTION_NAME", "documents")
-        
-        try:
-            provider = WeaviateVectorProvider(
-                url=weaviate_url,
-                api_key=weaviate_api_key,
-                collection_name=collection_name
-            )
-            return provider
-        except Exception as e:
-            raise
     
     def _create_chroma_provider(self) -> ChromaVectorProvider:
         """Create a ChromaDB provider instance"""
