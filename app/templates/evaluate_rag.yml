@@ -105,6 +105,7 @@ steps:
   - step: save_vector_llm_message
     pipeline_key: save_vector_llm_message
     inputs: 
+      - GetVectorReference
       - run_vector_rag
       - client_id
       - project_id

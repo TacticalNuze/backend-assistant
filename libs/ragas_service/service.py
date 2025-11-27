@@ -325,45 +325,12 @@ class RagasEvaluationService:
             Dictionary of metric names and their scores
         """
         scores = {}
-        
         # Create a span for the overall evaluation if Langfuse is enabled
-        langfuse_context = (
-            self.langfuse.start_as_current_observation(as_type="span", name="scoring_RAGAS_metrics")
-            if self.langfuse else None
-        )
-        
-        if langfuse_context:
-            span = langfuse_context.__enter__()
-            span_input = {
-                "user_input": user_input,
-                "retrieved_contexts": retrieved_contexts,
-                "response": response,
-                "num_contexts": len(retrieved_contexts)
-            }
-            if reference is not None:
-                span_input["reference"] = reference
-            span.update(input=span_input)
-        else:
-            span = None
-        
         try:
             # Calculate each metric with individual spans
             for metric in self.metrics:
                 metric_name = type(metric).__name__
-                logger.debug(f"Calculating {metric_name}...")
-                
-                # Create a span for each metric if Langfuse is enabled
-                metric_context = (
-                    self.langfuse.start_as_current_observation(as_type="span", name=f"scoring_{metric_name}")
-                    if self.langfuse else None
-                )
-                
-                if metric_context:
-                    metric_span = metric_context.__enter__()
-                    metric_span.update(input={"metric_name": metric_name})
-                else:
-                    metric_span = None
-                
+                logger.debug(f"Calculating {metric_name}...")      
                 try:
                     # Calculate the metric score
                     if metric_name == "ContextPrecision":
@@ -393,16 +360,6 @@ class RagasEvaluationService:
                     score_value = score_result.value if hasattr(score_result, 'value') else score_result
                     scores[metric_name] = score_value
                     
-                    # Record the score in the span if Langfuse is enabled
-                    if metric_span:
-                        metric_span.update(
-                            output={"score": score_value},
-                            metadata={
-                                "metric_name": metric_name,
-                                "score_type": type(score_result).__name__
-                            }
-                        )
-                    
                     logger.debug(f"{metric_name}: {score_value}")
                     
                 except ValueError as e:
@@ -411,27 +368,10 @@ class RagasEvaluationService:
                         f"the correct arguments are: {list(inspect.signature(metric.score).parameters.keys())}"
                     )
                     scores[metric_name] = None
-                except Exception as e:
-                    logger.error(f"Error calculating {metric_name}: {e}")
-                    scores[metric_name] = None
-                finally:
-                    if metric_context:
-                        metric_context.__exit__(None, None, None)
-            
-            # End the evaluation span with all scores if Langfuse is enabled
-            if span:
-                span.update(
-                    output=scores,
-                    metadata={
-                        "num_metrics": len(self.metrics),
-                        "metrics_calculated": list(scores.keys())
-                    }
-                )
-        
-        finally:
-            if langfuse_context:
-                langfuse_context.__exit__(None, None, None)
-        
+        except Exception as e:
+            logger.error(f"Error calculating metrics: {e}")
+            scores = {}
+            raise
         return scores
     
     async def evaluate(
@@ -463,67 +403,18 @@ class RagasEvaluationService:
         reference = mapped_data.get('reference')  # Optional field
         
         # Create a trace in Langfuse if enabled
-        langfuse_context = (
-            self.langfuse.start_as_current_observation(as_type="span", name=trace_name)
-            if self.langfuse else None
-        )
+        with self.langfuse.start_as_current_observation(as_type="span", name=trace_name) as trace:
+            trace_id=trace.trace_id
+            trace.score(user_input, retrieved_contexts, response, reference)
         
-        if langfuse_context:
-            span = langfuse_context.__enter__()
-            span_input = {
-                "user_input": user_input,
-                "retrieved_contexts": retrieved_contexts,
-                "response": response,
-            }
-            if reference is not None:
-                span_input["reference"] = reference
-            span.update(
-                input=span_input,
-                metadata={
-                    "evaluation_type": "ragas",
-                    "metrics": [type(m).__name__ for m in self.metrics]
-                }
+        scores = await self.score(user_input, retrieved_contexts, response, reference)
+        for metric_name, score in scores.items():
+            self.langfuse.create_score(
+                name=metric_name, 
+                value=score, 
+                trace_id=trace_id
             )
-        else:
-            span = None
-        
-        try:
-            # Calculate scores with tracing
-            scores = await self.score(user_input, retrieved_contexts, response, reference)
-            
-            # Update trace with final results if Langfuse is enabled
-            if span:
-                span.update_trace(
-                    output=scores,
-                    metadata={"num_metrics": len(scores)}
-                )
-            
-            result = {
-                "user_input": user_input,
-                "response": response,
-                "retrieved_contexts": retrieved_contexts,
-                "scores": scores,
-            }
-            
-            if reference is not None:
-                result["reference"] = reference
-            
-            if span:
-                result["trace_id"] = span.id
-            
-            return result
-            
-        except Exception as e:
-            # Handle errors
-            if span:
-                span.update_trace(
-                    output={"error": str(e)},
-                    tags=["ERROR"]
-                )
-            raise
-        finally:
-            if langfuse_context:
-                langfuse_context.__exit__(None, None, None)
+        return scores
     
     def flush(self):
         """Flush Langfuse traces to ensure all data is sent."""
