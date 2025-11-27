@@ -105,7 +105,7 @@ async def evaluate_with_langfuse(
 # Example usage for testing
 async def main():
     """Main function to run the evaluation (for testing purposes)."""
-    from datasets import load_dataset
+    from datasets import load_dataset  # pyright: ignore[reportMissingImports]
     
     try:
         amnesty_qa = load_dataset("parquet", data_files="./huggingface_data/eval.parquet")["train"]
