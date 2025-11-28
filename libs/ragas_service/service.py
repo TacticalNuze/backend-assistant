@@ -20,10 +20,18 @@ try:
 except ImportError as e:
     RAGAS_AVAILABLE = False
     IMPORT_ERROR = str(e)
-
 load_dotenv()
-
 logger = logging.getLogger(__name__)
+
+# Global service instance (lazy initialization) - will be initialized after class definition
+_service_instance: Optional['RagasEvaluationService'] = None
+
+def _get_service() -> 'RagasEvaluationService':
+    """Get or create the global service instance."""
+    global _service_instance
+    if _service_instance is None:
+        _service_instance = RagasEvaluationService()
+    return _service_instance
 
 
 class RagasEvaluationService:
@@ -313,7 +321,7 @@ class RagasEvaluationService:
         reference: Optional[str] = None
     ) -> Dict[str, float]:
         """
-        Score a RAG response using RAGAS metrics with Langfuse tracing.
+        Score a RAG response using RAGAS metrics.
         
         Args:
             user_input: The query/question to the RAG system
@@ -325,12 +333,12 @@ class RagasEvaluationService:
             Dictionary of metric names and their scores
         """
         scores = {}
-        # Create a span for the overall evaluation if Langfuse is enabled
         try:
-            # Calculate each metric with individual spans
+            # Calculate each metric
             for metric in self.metrics:
                 metric_name = type(metric).__name__
-                logger.debug(f"Calculating {metric_name}...")      
+                logger.debug(f"Calculating {metric_name}...")
+                
                 try:
                     # Calculate the metric score
                     if metric_name == "ContextPrecision":
@@ -359,9 +367,7 @@ class RagasEvaluationService:
                     
                     score_value = score_result.value if hasattr(score_result, 'value') else score_result
                     scores[metric_name] = score_value
-                    
                     logger.debug(f"{metric_name}: {score_value}")
-                    
                 except ValueError as e:
                     logger.warning(
                         f"Error calculating {metric_name}: {e}, "
@@ -371,9 +377,8 @@ class RagasEvaluationService:
         except Exception as e:
             logger.error(f"Error calculating metrics: {e}")
             scores = {}
-            raise
         return scores
-    
+            
     async def evaluate(
         self,
         rag_output: Dict[str, Any],
@@ -403,21 +408,141 @@ class RagasEvaluationService:
         reference = mapped_data.get('reference')  # Optional field
         
         # Create a trace in Langfuse if enabled
-        with self.langfuse.start_as_current_observation(as_type="span", name=trace_name) as trace:
-            trace_id=trace.trace_id
-            trace.score(user_input, retrieved_contexts, response, reference)
+        trace_id = None
+        scores = {}
         
-        scores = await self.score(user_input, retrieved_contexts, response, reference)
-        for metric_name, score in scores.items():
-            self.langfuse.create_score(
-                name=metric_name, 
-                value=score, 
-                trace_id=trace_id
-            )
-        return scores
-    
-    def flush(self):
-        """Flush Langfuse traces to ensure all data is sent."""
+        if self.langfuse:
+            with self.langfuse.start_as_current_observation(as_type="evaluator", name=trace_name) as trace:
+                trace_id = trace.trace_id
+                
+                # Calculate scores within the trace context
+                scores = await self.score(user_input, retrieved_contexts, response, reference)
+                
+                # Create scores for each metric in Langfuse
+                for metric_name, score in scores.items():
+                    if score:
+                        self.langfuse.create_score(
+                            name=metric_name, 
+                            value=score, 
+                            trace_id=trace_id
+                        )
+                
+                # Build result dictionary
+                result = {
+                    'user_input': user_input,
+                    'response': response,
+                    'retrieved_contexts': retrieved_contexts,
+                    'scores': scores
+                }
+                
+                # Add reference if available
+                if reference is not None:
+                    result['reference'] = reference
+                
+                # Add trace_id
+                result['trace_id'] = trace_id
+                
+                # Score trace for each individual metric - include all valid scores from score method
+                for metric_name, score_value in scores.items():
+                    if score_value is not None:
+                        trace.score_trace(name=metric_name, value=score_value)
+                
+                trace.update(metadata=result)
+
+        else:
+            # Calculate scores without Langfuse tracing
+            scores = await self.score(user_input, retrieved_contexts, response, reference)
+            
+            # Build result dictionary
+            result = {
+                'user_input': user_input,
+                'response': response,
+                'retrieved_contexts': retrieved_contexts,
+                'scores': scores
+            }
+            
+            # Add reference if available
+            if reference is not None:
+                result['reference'] = reference
+        
+        # Flush Langfuse if enabled
         if self.langfuse:
             self.langfuse.flush()
+        
+        return result
+
+
+# Module-level convenience functions for backward compatibility
+def map_rag_output_to_score_fields(rag_output: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Map RAG system output or dataset row to standardized fields for score_with_ragas.
+    
+    This function handles various field name variations and data formats commonly
+    found in RAG systems and evaluation datasets.
+    
+    Args:
+        rag_output: Dictionary containing RAG system output or dataset row with fields like:
+            - Query fields: 'query', 'question', 'user_input', 'input', 'prompt'
+            - Answer fields: 'answer', 'response', 'output', 'generated_answer'
+            - Context fields: 'contexts', 'retrieved_contexts', 'chunks', 'context', 
+                             'documents', 'retrieved_docs'
+            - Reference fields: 'reference', 'ground_truth', 'expected_answer', 'correct_answer'
+    
+    Returns:
+        Dictionary with standardized keys:
+            - 'user_input': str - The query/question to the RAG system
+            - 'response': str - The RAG system's generated response
+            - 'retrieved_contexts': List[str] - Retrieved context chunks
+            - 'reference': str - The predefined correct answer (ground truth), optional
+    """
+    service = _get_service()
+    return service.map_rag_output_to_score_fields(rag_output)
+
+
+async def score_with_ragas(
+    user_input: str,
+    retrieved_contexts: List[str],
+    response: str,
+    reference: Optional[str] = None
+) -> Dict[str, float]:
+    """
+    Score a RAG response using Ragas metrics with Langfuse tracing.
+    
+    Args:
+        user_input: The query/question to the RAG system
+        retrieved_contexts: Retrieved context chunks
+        response: The RAG system's generated response
+        reference: The predefined correct answer (ground truth), optional
+    
+    Returns:
+        Dictionary of metric names and their scores
+    """
+    service = _get_service()
+    return await service.score(user_input, retrieved_contexts, response, reference)
+
+
+async def evaluate_with_langfuse(
+    row: Dict[str, Any],
+    trace_name: str = "ragas_evaluation"
+) -> Dict[str, Any]:
+    """
+    Evaluate a single row with Ragas metrics and trace it in Langfuse.
+    
+    Args:
+        row: Dictionary containing user_input, retrieved_contexts, response, and optionally reference
+        trace_name: Name for the Langfuse trace
+    
+    Returns:
+        Dictionary with evaluation results including:
+            - user_input: The query/question
+            - response: The RAG system's response
+            - retrieved_contexts: Retrieved context chunks
+            - reference: The predefined correct answer (if available)
+            - scores: Dictionary of metric scores
+            - trace_id: Langfuse trace ID
+    """
+    service = _get_service()
+    return await service.evaluate(row, trace_name)
+
+ 
 
