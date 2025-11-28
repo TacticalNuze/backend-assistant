@@ -1901,47 +1901,8 @@ class EvaluateRAGWithRagas:
             }
 
 
-class GenerateEvalDataset:
-    """
-    Generate evaluation dataset from document chunks stored in ChromaDB.
-    
-    This pipeline operation orchestrates existing pipeline operations to:
-    1. Retrieve random chunks from ChromaDB
-    2. Generate queries from chunks using LLM (via prompt-based step)
-    3. Retrieve relevant contexts for each query (via SearchRelevantChunks)
-    4. Generate ground truth answers from contexts (via prompt-based step)
-    5. Optionally generate RAG responses (via prompt-based step)
-    6. Output JSON dataset file
-    7. Save dataset to Langfuse (if Langfuse is available)
-    
-    Inputs expected:
-      - client_id: Client identifier (required)
-      - project_id: Project identifier (required)
-      - language: Language code (default: "en")
-      - num_queries: Number of queries to generate (default: 10)
-      - chunks_per_query: Number of contexts to retrieve per query (default: 5)
-      - output_path: Path to save dataset JSON file (default: "eval_dataset.json")
-      - query_generation_prompt_key: Custom prompt key for query generation (default: "generate_query_from_chunk")
-      - ground_truth_prompt_key: Custom prompt key for ground truth generation (default: "generate_ground_truth")
-      - embedding_model: Embedding model name (default: "text-embedding-3-large")
-      - embedding_provider: Embedding provider (default: "azure_openai")
-      - generate_rag_response: Whether to generate RAG responses (default: False)
-      - rag_prompt_key: Prompt key for RAG response generation (optional)
-    
-    Output:
-      {
-        "status": "success",
-        "output_path": "path/to/eval_dataset.json",
-        "dataset_metadata": {
-          "num_queries": int,
-          "num_chunks_used": int,
-          "client_id": str,
-          "project_id": str,
-          "generation_timestamp": str
-        },
-        "langfuse_dataset_name": str (dataset name if saved to Langfuse, None otherwise)
-      }
-    """
+class RetrieveRandomChunks:
+    """Retrieve random chunks from ChromaDB for evaluation dataset generation"""
     
     def __init__(self, inputs: Dict[str, Any], project_name: str, prompt_config_src: str, pipeline_key: str):
         self.inputs = inputs
@@ -1950,245 +1911,582 @@ class GenerateEvalDataset:
         self.pipeline_key = pipeline_key
     
     def execute(self) -> Dict[str, Any]:
-        """Execute evaluation dataset generation using existing pipeline operations"""
-        logger.info('########################## GenerateEvalDataset ##########################')
-        logger.info(f'{self.pipeline_key=}')
-        
-        try:
-            import asyncio
-            import json
-            import os
-            from datetime import datetime
-            
-            # Extract and validate inputs
-            client_id = self.inputs.get("client_id")
-            project_id = self.inputs.get("project_id")
-            language = self.inputs.get("language", "en")
-            num_queries = self.inputs.get("num_queries", 100)
-            chunks_per_query = self.inputs.get("chunks_per_query", 5)
-            output_path = self.inputs.get("output_path", "eval_dataset.json")
-            query_generation_prompt_key = self.inputs.get("query_generation_prompt_key", "generate_query_from_chunk")
-            ground_truth_prompt_key = self.inputs.get("ground_truth_prompt_key", "generate_ground_truth")
-            embedding_model = self.inputs.get("embedding_model", "text-embedding-3-large")
-            embedding_provider = self.inputs.get("embedding_provider", "azure_openai")
-            generate_rag_response = self.inputs.get("generate_rag_response", True)
-            rag_prompt_key = self.inputs.get("rag_prompt_key", "run-vector-rag")
-            
-            # Validate required inputs
-            if not client_id or not project_id:
-                logger.error("Missing required inputs: client_id and project_id are required")
-                return {
-                    "status": "failed",
-                    "error": "Missing required inputs: client_id and project_id",
-                    "output_path": None
-                }
-            
-            logger.info(f"Generating evaluation dataset for {client_id}/{project_id}")
-            logger.info(f"Target: {num_queries} queries, {chunks_per_query} contexts per query")
-            
-            # Run async dataset generation
-            result = asyncio.run(self._generate_dataset_async(
-                client_id=client_id,
-                project_id=project_id,
-                language=language,
-                num_queries=num_queries,
-                chunks_per_query=chunks_per_query,
-                output_path=output_path,
-                query_generation_prompt_key=query_generation_prompt_key,
-                ground_truth_prompt_key=ground_truth_prompt_key,
-                embedding_model=embedding_model,
-                embedding_provider=embedding_provider,
-                generate_rag_response=generate_rag_response,
-                rag_prompt_key=rag_prompt_key
-            ))
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error generating evaluation dataset: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return {
-                "status": "failed",
-                "error": str(e),
-                "output_path": None
-            }
-    
-    async def _generate_dataset_async(
-        self,
-        client_id: str,
-        project_id: str,
-        language: str,
-        num_queries: int,
-        chunks_per_query: int,
-        output_path: str,
-        query_generation_prompt_key: str,
-        ground_truth_prompt_key: str,
-        embedding_model: str,
-        embedding_provider: str,
-        generate_rag_response: bool,
-        rag_prompt_key: str
-    ) -> Dict[str, Any]:
-        """Async method to generate the evaluation dataset using existing pipeline operations"""
+        """Retrieve random chunks from ChromaDB"""
+        import asyncio
         from libs.database_service.service import DatabaseService
-        import json
-        import os
-        from datetime import datetime
+        
+        client_id = self.inputs.get("client_id")
+        project_id = self.inputs.get("project_id")
+        language = self.inputs.get("language", "en")
+        # Use num_queries if provided, otherwise num_chunks, default to 100
+        num_queries = self.inputs.get("num_queries")
+        num_chunks = self.inputs.get("num_chunks")
+        
+        # Calculate num_chunks: get more chunks than queries to ensure we have enough
+        if num_queries:
+            num_chunks = num_queries * 2
+        elif not num_chunks:
+            num_chunks = 100
+        
+        if not all([client_id, project_id]):
+            logger.error("Missing required inputs: client_id and project_id")
+            return {"chunks": [], "error": "Missing required inputs"}
+        
+        return asyncio.run(self._retrieve_chunks_async(client_id, project_id, language, num_chunks))
+    
+    async def _retrieve_chunks_async(self, client_id: str, project_id: str, language: str, num_chunks: int) -> Dict[str, Any]:
+        """Async method to retrieve random chunks"""
+        from libs.database_service.service import DatabaseService
         import random
         
-        # Initialize database service for chunk retrieval
         db_service = DatabaseService()
         await db_service.initialize()
         
-        # Get ChromaDB provider
         chroma_provider = db_service.vector_manager.provider
-        
-        # Set collection name
         collection_name = f"chunks_{language}_{client_id}_{project_id}"
         chroma_provider.base_collection_name = collection_name
-        logger.info(f"Using ChromaDB collection: {collection_name}")
         
-        # Step 1: Retrieve random chunks from ChromaDB (using existing method)
-        logger.info("Step 1: Retrieving random chunks from ChromaDB...")
-        sample_chunks = await self._retrieve_random_chunks(
-            chroma_provider=chroma_provider,
-            client_id=client_id,
-            project_id=project_id,
-            num_chunks=num_queries * 2  # Get more chunks to ensure we have enough
-        )
-        
-        if not sample_chunks:
-            await db_service.close()
-            return {
-                "status": "failed",
-                "error": "No chunks found in ChromaDB collection",
-                "output_path": None
-            }
-        
-        logger.info(f"Retrieved {len(sample_chunks)} chunks from ChromaDB")
-        
-        # Initialize LLM gateway for prompt-based steps
-        llm_gateway = LLMGateway()
-        
-        # Step 2: Generate queries from chunks using prompt-based step
-        logger.info("Step 2: Generating queries from chunks using prompt-based step...")
-        queries_with_chunks = await self._generate_queries_from_chunks(
-            llm_gateway=llm_gateway,
-            chunks=sample_chunks[:num_queries],
-            prompt_key=query_generation_prompt_key,
-            project_name=self.project_name,
-            prompt_config=self.prompt_config_src
-        )
-        
-        if not queries_with_chunks:
-            await db_service.close()
-            return {
-                "status": "failed",
-                "error": "Failed to generate queries from chunks",
-                "output_path": None
-            }
-        
-        logger.info(f"Generated {len(queries_with_chunks)} queries")
-        
-        # Step 3: Generate dataset entries using existing pipeline operations
-        logger.info("Step 3: Generating dataset entries using existing pipeline operations...")
-        dataset = []
-        
-        # Create SearchRelevantChunks operation instance for reuse
-        search_operation = None
-        
-        for idx, (query, source_chunk) in enumerate(queries_with_chunks, 1):
-            logger.info(f"Processing query {idx}/{len(queries_with_chunks)}: {query[:50]}...")
+        def _get_chunks_sync():
+            collection_name = chroma_provider._get_collection_name(client_id)
+            collection = chroma_provider.client.get_collection(collection_name)
+            total_count = collection.count()
+            if total_count == 0:
+                return []
             
-            # Step 3a: Retrieve contexts using SearchRelevantChunks operation
-            search_inputs = {
-                "input_text": query,
-                "client_id": client_id,
-                "project_id": project_id,
-                "language": language,
-                "top_k": chunks_per_query,
-                "embedding_model": embedding_model,
-                "embedding_provider": embedding_provider
-            }
-            
-            search_operation = SearchRelevantChunks(
-                inputs=search_inputs,
-                project_name=self.project_name,
-                prompt_config_src=self.prompt_config_src,
-                pipeline_key="search_relevant_chunks"
+            limit = min(num_chunks * 2, total_count)
+            results = collection.get(
+                limit=limit,
+                where={"project_id": project_id} if project_id else None
             )
             
-            search_result = search_operation.execute()
-            relevant_chunks = search_result.get("relevant_chunks", [])
+            chunks = []
+            if results.get("documents") and results.get("ids"):
+                for i, doc_text in enumerate(results["documents"]):
+                    chunk_id = results["ids"][i] if i < len(results["ids"]) else None
+                    metadata = results["metadatas"][i] if results.get("metadatas") and i < len(results["metadatas"]) else {}
+                    chunks.append({
+                        "text": doc_text,
+                        "chunk_id": chunk_id,
+                        "metadata": metadata
+                    })
             
-            if not relevant_chunks:
-                logger.warning(f"No contexts retrieved for query {idx}, skipping...")
-                continue
+            if len(chunks) > num_chunks:
+                chunks = random.sample(chunks, num_chunks)
             
-            # Step 3b: Generate ground truth using prompt-based step
-            context_texts = [chunk.get("text", "") for chunk in relevant_chunks if chunk.get("text")]
-            contexts_combined = "\n\n".join(context_texts[:4000])
+            return chunks
+        
+        loop = asyncio.get_event_loop()
+        chunks = await loop.run_in_executor(None, _get_chunks_sync)
+        
+        await db_service.close()
+        
+        logger.info(f"Retrieved {len(chunks)} random chunks from ChromaDB")
+        return {"chunks": chunks, "num_chunks": len(chunks)}
+
+
+class GenerateQueriesFromChunks:
+    """Generate queries from chunks using LLM (prompt-based step)"""
+    
+    def __init__(self, inputs: Dict[str, Any], project_name: str, prompt_config_src: str, pipeline_key: str):
+        self.inputs = inputs
+        self.project_name = project_name
+        self.prompt_config_src = prompt_config_src
+        self.pipeline_key = pipeline_key
+    
+    def execute(self) -> Dict[str, Any]:
+        """Generate queries from chunks using prompt-based step"""
+        import asyncio
+        
+        # Get chunks from previous step
+        retrieve_result = self.inputs.get("retrieve_random_chunks", {})
+        if isinstance(retrieve_result, dict):
+            chunks = retrieve_result.get("chunks", [])
+        else:
+            chunks = []
+        
+        num_queries = self.inputs.get("num_queries", len(chunks))
+        query_generation_prompt_key = self.inputs.get("query_generation_prompt_key", "generate-query-from-chunk")
+        
+        if not chunks:
+            logger.warning("No chunks provided for query generation")
+            return {"queries": [], "num_queries": 0}
+        
+        return asyncio.run(self._generate_queries_async(
+            chunks=chunks[:num_queries],
+            prompt_key=query_generation_prompt_key
+        ))
+    
+    async def _generate_queries_async(self, chunks: List[Dict[str, Any]], prompt_key: str) -> Dict[str, Any]:
+        """Async method to generate queries from chunks in batch"""
+        llm_gateway = LLMGateway()
+        
+        # Filter and prepare chunks
+        valid_chunks = []
+        for chunk in chunks:
+            chunk_text = chunk.get("text", "")
+            if chunk_text and len(chunk_text.strip()) >= 50:
+                valid_chunks.append(chunk_text[:2000])  # Limit chunk size
+        
+        if not valid_chunks:
+            logger.warning("No valid chunks for query generation")
+            return []
+        
+        try:
+            # Generate queries in batch - combine all chunks into a single prompt
+            chunks_text = "\n\n---\n\n".join([f"Chunk {i+1}:\n{chunk}" for i, chunk in enumerate(valid_chunks)])
             
-            ground_truth_inputs = {
-                "query": query,
-                "contexts": contexts_combined
+            prompt_variables = {
+                "chunk_text": chunks_text,
+                "num_chunks": len(valid_chunks)
             }
             
-            try:
-                ground_truth_response = await llm_gateway.generate(
-                    prompt_key=ground_truth_prompt_key,
-                    variables=ground_truth_inputs,
-                    temperature=0.3,
-                    max_tokens=500
-                )
-                ground_truth = str(ground_truth_response).strip() if ground_truth_response else ""
-            except Exception as e:
-                logger.warning(f"Error generating ground truth for query {idx}: {e}")
-                ground_truth = ""
+            logger.info(f"Generating queries in batch for {len(valid_chunks)} chunks")
+            query_response = await llm_gateway.generate(
+                prompt_key=prompt_key,
+                variables=prompt_variables,
+                temperature=0.7,
+                max_tokens=4000
+            )
             
-            if not ground_truth:
-                logger.warning(f"Failed to generate ground truth for query {idx}, skipping...")
-                continue
-            
-            # Step 3c: Optionally generate RAG response using prompt-based step
-            response = ""
-            if generate_rag_response:
-                rag_inputs = {
-                    "input_text": query,
-                    "contexts": contexts_combined
-                }
+            if query_response:
+                # Parse response to extract all questions
+                queries = []
+                response_text = str(query_response).strip()
                 
-                try:
-                    rag_response = await llm_gateway.generate(
-                        prompt_key=rag_prompt_key,
-                        variables=rag_inputs,
-                        temperature=0.7,
-                        max_tokens=500
-                    )
-                    response = str(rag_response).strip() if rag_response else ""
-                except Exception as e:
-                    logger.warning(f"Error generating RAG response for query {idx}: {e}")
-                    response = ""
-            
-            # Add to dataset
-            dataset.append({
-                "query": query,
-                "response": response,
-                "contexts": context_texts,
-                "ground_truth": ground_truth
-            })
+                # Split by newlines and process each line
+                for line in response_text.split('\n'):
+                    line = line.strip()
+                    # Remove numbering if present
+                    if line and (line[0].isdigit() or line.startswith('-')):
+                        line = line.split('.', 1)[-1].strip()
+                    if line and len(line) > 10:  # Valid question
+                        queries.append(line)
+                
+                # If no questions found but response is long, treat entire response as one query
+                if not queries and len(response_text) > 10:
+                    queries.append(response_text)
+                
+                logger.info(f"Generated {len(queries)} queries in batch from {len(valid_chunks)} chunks")
+                return queries
+            else:
+                logger.warning("No response from LLM for batch query generation")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error generating queries in batch: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return []
+
+
+class ProcessEvalQueriesBatch:
+    """Process queries in batch: search contexts, generate ground truth, and optionally RAG response for multiple queries"""
+    
+    def __init__(self, inputs: Dict[str, Any], project_name: str, prompt_config_src: str, pipeline_key: str):
+        self.inputs = inputs
+        self.project_name = project_name
+        self.prompt_config_src = prompt_config_src
+        self.pipeline_key = pipeline_key
+    
+    def execute(self) -> Dict[str, Any]:
+        """Process queries in batch for evaluation dataset"""
+        import asyncio
         
-        # Step 4: Save dataset to JSON file
-        logger.info(f"Step 4: Saving dataset to {output_path}...")
-        dataset_metadata = {
-            "num_queries": len(dataset),
-            "num_chunks_used": len(sample_chunks),
+        # Get queries from previous step
+        generate_queries_input = self.inputs.get("generate_queries", [])
+        
+        # Handle different input formats
+        if isinstance(generate_queries_input, str):
+            queries = [generate_queries_input]
+        elif isinstance(generate_queries_input, list):
+            queries = [q for q in generate_queries_input if isinstance(q, str)]
+        else:
+            queries = []
+        
+        if not queries:
+            logger.warning("No queries provided for batch processing")
+            return {"processed_queries": []}
+        
+        client_id = self.inputs.get("client_id")
+        project_id = self.inputs.get("project_id")
+        language = self.inputs.get("language", "en")
+        chunks_per_query = self.inputs.get("chunks_per_query", 5)
+        embedding_model = self.inputs.get("embedding_model", "text-embedding-3-large")
+        embedding_provider = self.inputs.get("embedding_provider", "azure_openai")
+        ground_truth_prompt_key = self.inputs.get("ground_truth_prompt_key", "generate-ground-truth")
+        generate_rag_response = self.inputs.get("generate_rag_response", True)
+        rag_prompt_key = self.inputs.get("rag_prompt_key", "run-vector-rag")
+        batch_size = self.inputs.get("batch_size", 10)  # Process queries in batches
+        
+        logger.info(f"Processing {len(queries)} queries in batches of {batch_size}")
+        
+        return asyncio.run(self._process_queries_batch_async(
+            queries=queries,
+            client_id=client_id,
+            project_id=project_id,
+            language=language,
+            chunks_per_query=chunks_per_query,
+            embedding_model=embedding_model,
+            embedding_provider=embedding_provider,
+            ground_truth_prompt_key=ground_truth_prompt_key,
+            generate_rag_response=generate_rag_response,
+            rag_prompt_key=rag_prompt_key,
+            batch_size=batch_size
+        ))
+    
+    async def _process_queries_batch_async(
+        self,
+        queries: List[str],
+        client_id: str,
+        project_id: str,
+        language: str,
+        chunks_per_query: int,
+        embedding_model: str,
+        embedding_provider: str,
+        ground_truth_prompt_key: str,
+        generate_rag_response: bool,
+        rag_prompt_key: str,
+        batch_size: int
+    ) -> Dict[str, Any]:
+        """Process queries in batches"""
+        processed_results = []
+        
+        # Process queries in batches
+        for batch_start in range(0, len(queries), batch_size):
+            batch_end = min(batch_start + batch_size, len(queries))
+            batch_queries = queries[batch_start:batch_end]
+            
+            logger.info(f"Processing batch {batch_start//batch_size + 1}: queries {batch_start+1}-{batch_end} of {len(queries)}")
+            
+            # Process each query in the batch
+            batch_results = []
+            for query in batch_queries:
+                try:
+                    result = await self._process_single_query(
+                        query=query,
+                        client_id=client_id,
+                        project_id=project_id,
+                        language=language,
+                        chunks_per_query=chunks_per_query,
+                        embedding_model=embedding_model,
+                        embedding_provider=embedding_provider,
+                        ground_truth_prompt_key=ground_truth_prompt_key,
+                        generate_rag_response=generate_rag_response,
+                        rag_prompt_key=rag_prompt_key
+                    )
+                    batch_results.append(result)
+                except Exception as e:
+                    logger.error(f"Error processing query '{query[:50]}...': {e}")
+                    batch_results.append({
+                        "query": query,
+                        "error": str(e),
+                        "contexts": [],
+                        "ground_truth": "",
+                        "response": ""
+                    })
+            
+            processed_results.extend(batch_results)
+        
+        logger.info(f"Processed {len(processed_results)} queries in total")
+        return {"processed_queries": processed_results}
+    
+    async def _process_single_query(
+        self,
+        query: str,
+        client_id: str,
+        project_id: str,
+        language: str,
+        chunks_per_query: int,
+        embedding_model: str,
+        embedding_provider: str,
+        ground_truth_prompt_key: str,
+        generate_rag_response: bool,
+        rag_prompt_key: str
+    ) -> Dict[str, Any]:
+        """Process a single query"""
+        # Step 1: Search relevant chunks
+        search_inputs = {
+            "input_text": query,
             "client_id": client_id,
             "project_id": project_id,
             "language": language,
-            "generation_timestamp": datetime.utcnow().isoformat(),
-            "chunks_per_query": chunks_per_query
+            "top_k": chunks_per_query,
+            "embedding_model": embedding_model,
+            "embedding_provider": embedding_provider
         }
+        
+        search_operation = SearchRelevantChunks(
+            inputs=search_inputs,
+            project_name=self.project_name,
+            prompt_config_src=self.prompt_config_src,
+            pipeline_key="search_relevant_chunks"
+        )
+        
+        search_result = search_operation.execute()
+        relevant_chunks = search_result.get("relevant_chunks", [])
+        
+        if not relevant_chunks:
+            return {
+                "query": query,
+                "error": "No contexts retrieved",
+                "contexts": [],
+                "ground_truth": "",
+                "response": ""
+            }
+        
+        # Step 2: Generate ground truth
+        context_texts = [chunk.get("text", "") for chunk in relevant_chunks if chunk.get("text")]
+        contexts_combined = "\n\n".join(context_texts[:4000])
+        
+        llm_gateway = LLMGateway()
+        ground_truth = ""
+        try:
+            ground_truth_response = await llm_gateway.generate(
+                prompt_key=ground_truth_prompt_key,
+                variables={"query": query, "contexts": contexts_combined},
+                temperature=0.3,
+                max_tokens=500
+            )
+            ground_truth = str(ground_truth_response).strip() if ground_truth_response else ""
+        except Exception as e:
+            logger.warning(f"Error generating ground truth for query: {e}")
+        
+        # Step 3: Optionally generate RAG response
+        response = ""
+        if generate_rag_response:
+            try:
+                rag_response = await llm_gateway.generate(
+                    prompt_key=rag_prompt_key,
+                    variables={"input_text": query, "contexts": contexts_combined},
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                response = str(rag_response).strip() if rag_response else ""
+            except Exception as e:
+                logger.warning(f"Error generating RAG response: {e}")
+        
+        return {
+            "query": query,
+            "contexts": context_texts,
+            "ground_truth": ground_truth,
+            "response": response
+        }
+
+
+class ProcessEvalQuery:
+    """Process a single query: search contexts, generate ground truth, and optionally RAG response"""
+    
+    def __init__(self, inputs: Dict[str, Any], project_name: str, prompt_config_src: str, pipeline_key: str):
+        self.inputs = inputs
+        self.project_name = project_name
+        self.prompt_config_src = prompt_config_src
+        self.pipeline_key = pipeline_key
+    
+    def execute(self) -> Dict[str, Any]:
+        """Process a single query for evaluation dataset"""
+        import asyncio
+        
+        # Handle input from parallel task
+        # When parallel_inputs is used, each query string is passed directly
+        generate_queries_input = self.inputs.get("generate_queries")
+        
+        # If it's a string, use it directly (parallel task passes individual queries)
+        if isinstance(generate_queries_input, str):
+            query = generate_queries_input
+        # If it's a list, get first item (fallback)
+        elif isinstance(generate_queries_input, list) and len(generate_queries_input) > 0:
+            query = generate_queries_input[0] if isinstance(generate_queries_input[0], str) else None
+        else:
+            query = None
+        
+        client_id = self.inputs.get("client_id")
+        project_id = self.inputs.get("project_id")
+        language = self.inputs.get("language", "en")
+        chunks_per_query = self.inputs.get("chunks_per_query", 5)
+        embedding_model = self.inputs.get("embedding_model", "text-embedding-3-large")
+        embedding_provider = self.inputs.get("embedding_provider", "azure_openai")
+        ground_truth_prompt_key = self.inputs.get("ground_truth_prompt_key", "generate-ground-truth")
+        generate_rag_response = self.inputs.get("generate_rag_response", True)
+        rag_prompt_key = self.inputs.get("rag_prompt_key", "run-vector-rag")
+        
+        if not query:
+            return {"error": "Missing query input", "query": None}
+        
+        return asyncio.run(self._process_query_async(
+            query=query,
+            client_id=client_id,
+            project_id=project_id,
+            language=language,
+            chunks_per_query=chunks_per_query,
+            embedding_model=embedding_model,
+            embedding_provider=embedding_provider,
+            ground_truth_prompt_key=ground_truth_prompt_key,
+            generate_rag_response=generate_rag_response,
+            rag_prompt_key=rag_prompt_key
+        ))
+    
+    async def _process_query_async(
+        self,
+        query: str,
+        client_id: str,
+        project_id: str,
+        language: str,
+        chunks_per_query: int,
+        embedding_model: str,
+        embedding_provider: str,
+        ground_truth_prompt_key: str,
+        generate_rag_response: bool,
+        rag_prompt_key: str
+    ) -> Dict[str, Any]:
+        """Async method to process a single query"""
+        # Step 1: Search relevant chunks
+        search_inputs = {
+            "input_text": query,
+            "client_id": client_id,
+            "project_id": project_id,
+            "language": language,
+            "top_k": chunks_per_query,
+            "embedding_model": embedding_model,
+            "embedding_provider": embedding_provider
+        }
+        
+        search_operation = SearchRelevantChunks(
+            inputs=search_inputs,
+            project_name=self.project_name,
+            prompt_config_src=self.prompt_config_src,
+            pipeline_key="search_relevant_chunks"
+        )
+        
+        search_result = search_operation.execute()
+        relevant_chunks = search_result.get("relevant_chunks", [])
+        
+        if not relevant_chunks:
+            return {
+                "query": query,
+                "error": "No contexts retrieved",
+                "contexts": [],
+                "ground_truth": "",
+                "response": ""
+            }
+        
+        # Step 2: Generate ground truth
+        context_texts = [chunk.get("text", "") for chunk in relevant_chunks if chunk.get("text")]
+        contexts_combined = "\n\n".join(context_texts[:4000])
+        
+        llm_gateway = LLMGateway()
+        ground_truth = ""
+        try:
+            ground_truth_response = await llm_gateway.generate(
+                prompt_key=ground_truth_prompt_key,
+                variables={"query": query, "contexts": contexts_combined},
+                temperature=0.3,
+                max_tokens=500
+            )
+            ground_truth = str(ground_truth_response).strip() if ground_truth_response else ""
+        except Exception as e:
+            logger.warning(f"Error generating ground truth: {e}")
+        
+        # Step 3: Optionally generate RAG response
+        response = ""
+        if generate_rag_response:
+            try:
+                rag_response = await llm_gateway.generate(
+                    prompt_key=rag_prompt_key,
+                    variables={"input_text": query, "contexts": contexts_combined},
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                response = str(rag_response).strip() if rag_response else ""
+            except Exception as e:
+                logger.warning(f"Error generating RAG response: {e}")
+        
+        return {
+            "query": query,
+            "contexts": context_texts,
+            "ground_truth": ground_truth,
+            "response": response
+        }
+
+
+class CombineEvalDataset:
+    """Combine processed queries into final evaluation dataset"""
+    
+    def __init__(self, inputs: Dict[str, Any], project_name: str, prompt_config_src: str, pipeline_key: str):
+        self.inputs = inputs
+        self.project_name = project_name
+        self.prompt_config_src = prompt_config_src
+        self.pipeline_key = pipeline_key
+    
+    def execute(self) -> Dict[str, Any]:
+        """Combine processed queries into dataset"""
+        # Get processed queries from previous step (process_queries)
+        process_result = self.inputs.get("process_queries", {})
+        
+        # Handle batch processing result format
+        if isinstance(process_result, dict):
+            processed_queries = process_result.get("processed_queries", [])
+        elif isinstance(process_result, list):
+            processed_queries = process_result
+        else:
+            processed_queries = []
+        
+        # Ensure it's a list
+        if not isinstance(processed_queries, list):
+            processed_queries = [processed_queries] if processed_queries else []
+        
+        # Flatten if nested (from parallel merge or batch processing)
+        dataset = []
+        for item in processed_queries:
+            if isinstance(item, list):
+                dataset.extend([d for d in item if isinstance(d, dict) and "query" in d])
+            elif isinstance(item, dict):
+                if "query" in item:
+                    dataset.append(item)
+                elif "response" in item:  # Could be wrapped
+                    dataset.append(item)
+        
+        # Filter out errors
+        dataset = [d for d in dataset if not d.get("error")]
+        
+        logger.info(f"Combined {len(dataset)} valid entries into evaluation dataset")
+        
+        return {
+            "dataset": dataset,
+            "num_queries": len(dataset)
+        }
+
+
+class SaveEvalDatasetToFile:
+    """Save evaluation dataset to JSON file"""
+    
+    def __init__(self, inputs: Dict[str, Any], project_name: str, prompt_config_src: str, pipeline_key: str):
+        self.inputs = inputs
+        self.project_name = project_name
+        self.prompt_config_src = prompt_config_src
+        self.pipeline_key = pipeline_key
+    
+    def execute(self) -> Dict[str, Any]:
+        """Save dataset to JSON file"""
+        import json
+        import os
+        from datetime import datetime
+        
+        # Get dataset from combine_dataset step
+        combine_result = self.inputs.get("combine_dataset", {})
+        if isinstance(combine_result, dict):
+            dataset = combine_result.get("dataset", [])
+        else:
+            dataset = []
+        
+        output_path = self.inputs.get("output_path", "eval_dataset.json")
+        client_id = self.inputs.get("client_id")
+        project_id = self.inputs.get("project_id")
+        language = self.inputs.get("language", "en")
+        chunks_per_query = self.inputs.get("chunks_per_query", 5)
+        
+        if not dataset:
+            logger.warning("No dataset to save")
+            return {"status": "failed", "error": "No dataset to save"}
         
         # Ensure output directory exists
         output_dir = os.path.dirname(output_path) if os.path.dirname(output_path) else "."
@@ -2199,45 +2497,91 @@ class GenerateEvalDataset:
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(dataset, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"Successfully saved {len(dataset)} dataset entries to {output_path}")
+        dataset_metadata = {
+            "num_queries": len(dataset),
+            "client_id": client_id,
+            "project_id": project_id,
+            "language": language,
+            "generation_timestamp": datetime.utcnow().isoformat(),
+            "chunks_per_query": chunks_per_query
+        }
         
-        # Step 5: Save dataset to Langfuse
-        langfuse_dataset_name = None
+        logger.info(f"Successfully saved {len(dataset)} entries to {output_path}")
+        
+        return {
+            "status": "success",
+            "output_path": output_path,
+            "dataset_metadata": dataset_metadata,
+            "dataset": dataset  # Pass through for next step
+        }
+
+
+class SaveEvalDatasetToLangfuse:
+    """Save evaluation dataset to Langfuse"""
+    
+    def __init__(self, inputs: Dict[str, Any], project_name: str, prompt_config_src: str, pipeline_key: str):
+        self.inputs = inputs
+        self.project_name = project_name
+        self.prompt_config_src = prompt_config_src
+        self.pipeline_key = pipeline_key
+    
+    def execute(self) -> Dict[str, Any]:
+        """Save dataset to Langfuse"""
         try:
             from langfuse import Langfuse
-            
-            # Initialize Langfuse client
+        except ImportError:
+            logger.warning("Langfuse package not available. Skipping Langfuse dataset creation.")
+            return {"status": "skipped", "reason": "Langfuse not available"}
+        
+        # Get dataset from save_dataset_to_file step
+        save_result = self.inputs.get("save_dataset_to_file", {})
+        if isinstance(save_result, dict):
+            dataset = save_result.get("dataset", [])
+            dataset_metadata = save_result.get("dataset_metadata", {})
+        else:
+            dataset = []
+            dataset_metadata = {}
+        
+        # Get num_chunks_used from retrieve_random_chunks step
+        retrieve_result = self.inputs.get("retrieve_random_chunks", {})
+        if isinstance(retrieve_result, dict):
+            num_chunks_used = retrieve_result.get("num_chunks", 0)
+        else:
+            num_chunks_used = 0
+        
+        client_id = self.inputs.get("client_id")
+        project_id = self.inputs.get("project_id")
+        language = self.inputs.get("language", "en")
+        
+        if not dataset:
+            logger.warning("No dataset to save to Langfuse")
+            return {"status": "failed", "error": "No dataset to save"}
+        
+        try:
             langfuse = Langfuse()
             
-            # Create dataset name based on client_id and project_id
             dataset_name = f"ragas_generated_testset_{client_id}_{project_id}_{language}"
             dataset_description = f"Synthetic RAG test set (RAGAS) for {client_id}/{project_id}"
             
-            # Create dataset in Langfuse
             logger.info(f"Creating Langfuse dataset: {dataset_name}")
             langfuse.create_dataset(
                 name=dataset_name,
                 description=dataset_description,
                 metadata={
                     "source": "RAGAS",
-                    "docs_used": len(sample_chunks),
+                    "docs_used": num_chunks_used,
                     "client_id": client_id,
                     "project_id": project_id,
                     "language": language,
                     "num_queries": len(dataset),
-                    "chunks_per_query": chunks_per_query,
-                    "generation_timestamp": dataset_metadata["generation_timestamp"]
+                    "chunks_per_query": dataset_metadata.get("chunks_per_query", 5),
+                    "generation_timestamp": dataset_metadata.get("generation_timestamp", "")
                 }
             )
             
-            langfuse_dataset_name = dataset_name
-            logger.info(f"Created Langfuse dataset: {dataset_name}")
-            
-            # Add each dataset item to Langfuse
             logger.info(f"Adding {len(dataset)} items to Langfuse dataset...")
             for idx, row in enumerate(dataset, 1):
                 try:
-                    # Prepare metadata with contexts
                     item_metadata = {
                         "reference_contexts": row.get("contexts", []),
                         "query_index": idx,
@@ -2245,150 +2589,32 @@ class GenerateEvalDataset:
                         "num_contexts": len(row.get("contexts", []))
                     }
                     
-                    # Create dataset item
                     langfuse.create_dataset_item(
                         dataset_name=dataset_name,
-                        input=row.get("query", ""),  # user_input
-                        expected_output=row.get("ground_truth", ""),  # ground truth
+                        input=row.get("query", ""),
+                        expected_output=row.get("ground_truth", ""),
                         metadata=item_metadata
                     )
                     
                     if idx % 10 == 0:
                         logger.info(f"Added {idx}/{len(dataset)} items to Langfuse dataset")
-                        
                 except Exception as e:
                     logger.warning(f"Error adding dataset item {idx} to Langfuse: {e}")
                     continue
             
-            # Flush Langfuse to ensure all items are saved
             langfuse.flush()
             logger.info(f"Successfully added {len(dataset)} items to Langfuse dataset: {dataset_name}")
             
-        except ImportError:
-            logger.warning("Langfuse package not available. Skipping Langfuse dataset creation.")
+            return {
+                "status": "success",
+                "langfuse_dataset_name": dataset_name
+            }
+            
         except Exception as e:
             logger.error(f"Error creating Langfuse dataset: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
-            # Continue execution even if Langfuse fails
-        
-        # Close database service
-        await db_service.close()
-        
-        return {
-            "status": "success",
-            "output_path": output_path,
-            "dataset_metadata": dataset_metadata,
-            "langfuse_dataset_name": langfuse_dataset_name
-        }
-    
-    async def _retrieve_random_chunks(
-        self,
-        chroma_provider,
-        client_id: str,
-        project_id: str,
-        num_chunks: int
-    ) -> List[Dict[str, Any]]:
-        """Retrieve random chunks from ChromaDB collection"""
-        try:
-            import asyncio
-            import random
-            
-            def _get_chunks_sync():
-                collection_name = chroma_provider._get_collection_name(client_id)
-                collection = chroma_provider.client.get_collection(collection_name)
-                
-                # Get total count
-                total_count = collection.count()
-                if total_count == 0:
-                    return []
-                
-                # Get random sample - get more than needed and sample randomly
-                limit = min(num_chunks * 2, total_count)
-                results = collection.get(
-                    limit=limit,
-                    where={"project_id": project_id} if project_id else None
-                )
-                
-                # Convert to list of chunk dicts
-                chunks = []
-                if results.get("documents") and results.get("ids"):
-                    for i, doc_text in enumerate(results["documents"]):
-                        chunk_id = results["ids"][i] if i < len(results["ids"]) else None
-                        metadata = results["metadatas"][i] if results.get("metadatas") and i < len(results["metadatas"]) else {}
-                        
-                        chunks.append({
-                            "text": doc_text,
-                            "chunk_id": chunk_id,
-                            "metadata": metadata
-                        })
-                
-                # Randomly sample the requested number
-                if len(chunks) > num_chunks:
-                    chunks = random.sample(chunks, num_chunks)
-                
-                return chunks
-            
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, _get_chunks_sync)
-            
-        except Exception as e:
-            logger.error(f"Error retrieving random chunks: {e}")
-            return []
-    
-    async def _generate_queries_from_chunks(
-        self,
-        llm_gateway,
-        chunks: List[Dict[str, Any]],
-        prompt_key: str,
-        project_name: str,
-        prompt_config: Any
-    ) -> List[tuple]:
-        """Generate queries from chunks using LLM gateway (prompt-based step)"""
-        queries_with_chunks = []
-        
-        for chunk in chunks:
-            chunk_text = chunk.get("text", "")
-            if not chunk_text or len(chunk_text.strip()) < 50:  # Skip very short chunks
-                continue
-            
-            try:
-                # Prepare prompt variables
-                prompt_variables = {
-                    "chunk_text": chunk_text[:2000]  # Limit chunk text length
-                }
-                
-                # Generate query using LLM gateway (prompt-based step)
-                query_response = await llm_gateway.generate(
-                    prompt_key=prompt_key,
-                    variables=prompt_variables,
-                    temperature=0.7,
-                    max_tokens=200
-                )
-                
-                # Parse response to extract questions
-                if query_response:
-                    # Clean and split questions
-                    questions = []
-                    for line in str(query_response).strip().split('\n'):
-                        line = line.strip()
-                        # Remove numbering if present
-                        if line and (line[0].isdigit() or line.startswith('-')):
-                            line = line.split('.', 1)[-1].strip()
-                        if line and len(line) > 10:  # Valid question
-                            questions.append(line)
-                    
-                    # Use first question or generate default
-                    if questions:
-                        queries_with_chunks.append((questions[0], chunk))
-                    elif len(str(query_response).strip()) > 10:
-                        queries_with_chunks.append((str(query_response).strip(), chunk))
-                
-            except Exception as e:
-                logger.warning(f"Error generating query from chunk: {e}")
-                continue
-        
-        return queries_with_chunks
+            return {"status": "failed", "error": str(e)}
 
 
 class PassThrough:
@@ -2427,10 +2653,17 @@ pipeline_operations: Dict[str, Any] = {
     "search_relevant_chunks": SearchRelevantChunks,
     "GetVectorReference": GetVectorReference,
     "fetch_chat_history": FetchChatHistory,
+    # Evaluation dataset operations
+    "retrieve_random_chunks": RetrieveRandomChunks,
+    "generate_queries_from_chunks": GenerateQueriesFromChunks,
+    "process_eval_query": ProcessEvalQuery,
+    "process_eval_queries_batch": ProcessEvalQueriesBatch,
+    "combine_eval_dataset": CombineEvalDataset,
+    "save_eval_dataset_to_file": SaveEvalDatasetToFile,
+    "save_eval_dataset_to_langfuse": SaveEvalDatasetToLangfuse,
     # Utility operations
     "combine_vector_response_and_references": CombineVectorResponseAndReferences,
     "evaluate_rag_with_ragas": EvaluateRAGWithRagas,
-    "generate_eval_dataset": GenerateEvalDataset,
     "PassThrough": PassThrough,
 }
 
