@@ -8,7 +8,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
+*.env
 logs.txt
 
 # IDE files
