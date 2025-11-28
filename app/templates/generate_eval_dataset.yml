@@ -21,36 +21,77 @@ inputs:
   - rag_prompt_key
 
 steps:
-  # Step 1: Generate evaluation dataset
-  # This step orchestrates the entire process:
-  # - Retrieves random chunks from ChromaDB
-  # - Generates queries from chunks (using prompt-based step)
-  # - Retrieves relevant contexts (using SearchRelevantChunks)
-  # - Generates ground truth (using prompt-based step)
-  # - Optionally generates RAG responses (using prompt-based step)
-  # - Saves dataset to JSON file
-  - step: generate_eval_dataset
-    pipeline_key: generate_eval_dataset
+  # Step 1: Retrieve random chunks from ChromaDB
+  - step: retrieve_random_chunks
+    pipeline_key: retrieve_random_chunks
     inputs:
       - client_id
       - project_id
       - language
       - num_queries
-      - chunks_per_query
-      - output_path
+    queue: io_queue
+
+  # Step 2: Generate queries from chunks using prompt-based step
+  - step: generate_queries
+    pipeline_key: generate_queries_from_chunks
+    inputs:
+      - retrieve_random_chunks
+      - num_queries
       - query_generation_prompt_key
-      - ground_truth_prompt_key
+    queue: default_queue
+
+  # Step 3: Process queries in batch
+  # For each query: search contexts, generate ground truth, and optionally RAG response
+  # Processes all queries in batches instead of one-by-one
+  - step: process_queries
+    pipeline_key: process_eval_queries_batch
+    inputs:
+      - generate_queries
+      - client_id
+      - project_id
+      - language
+      - chunks_per_query
       - embedding_model
       - embedding_provider
+      - ground_truth_prompt_key
       - generate_rag_response
       - rag_prompt_key
+    queue: io_queue
+
+  # Step 4: Combine processed queries into final dataset
+  - step: combine_dataset
+    pipeline_key: combine_eval_dataset
+    inputs:
+      - process_queries
     queue: default_queue
+
+  # Step 5: Save dataset to JSON file
+  - step: save_dataset_to_file
+    pipeline_key: save_eval_dataset_to_file
+    inputs:
+      - combine_dataset
+      - output_path
+      - client_id
+      - project_id
+      - language
+      - chunks_per_query
+    queue: io_queue
+
+  # Step 6: Save dataset to Langfuse
+  - step: save_dataset_to_langfuse
+    pipeline_key: save_eval_dataset_to_langfuse
+    inputs:
+      - save_dataset_to_file
+      - client_id
+      - project_id
+      - language
+      - retrieve_random_chunks
+    queue: io_queue
 
   # Final step: Pass through the results
   - step: pass_through
     pipeline_key: PassThrough
     section_id: eval_dataset_result
     inputs:
-      - generate_eval_dataset
+      - save_dataset_to_langfuse
     queue: default_queue
-
