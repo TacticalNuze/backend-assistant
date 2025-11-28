@@ -9,6 +9,7 @@ __pycache__/
 *.pyo
 *.pyd
 *.env
+staging.env
 logs.txt
 
 # IDE files
