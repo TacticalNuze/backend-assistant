@@ -1,0 +1,56 @@
+defaults: &defaults
+  template_id: generate_eval_dataset
+  prompt_config:
+    source: local
+  database: default
+
+task: generate_eval_dataset
+<<: *defaults
+inputs:
+  - client_id
+  - project_id
+  - language
+  - num_queries
+  - chunks_per_query
+  - output_path
+  - query_generation_prompt_key
+  - ground_truth_prompt_key
+  - embedding_model
+  - embedding_provider
+  - generate_rag_response
+  - rag_prompt_key
+
+steps:
+  # Step 1: Generate evaluation dataset
+  # This step orchestrates the entire process:
+  # - Retrieves random chunks from ChromaDB
+  # - Generates queries from chunks (using prompt-based step)
+  # - Retrieves relevant contexts (using SearchRelevantChunks)
+  # - Generates ground truth (using prompt-based step)
+  # - Optionally generates RAG responses (using prompt-based step)
+  # - Saves dataset to JSON file
+  - step: generate_eval_dataset
+    pipeline_key: generate_eval_dataset
+    inputs:
+      - client_id
+      - project_id
+      - language
+      - num_queries
+      - chunks_per_query
+      - output_path
+      - query_generation_prompt_key
+      - ground_truth_prompt_key
+      - embedding_model
+      - embedding_provider
+      - generate_rag_response
+      - rag_prompt_key
+    queue: default_queue
+
+  # Final step: Pass through the results
+  - step: pass_through
+    pipeline_key: PassThrough
+    section_id: eval_dataset_result
+    inputs:
+      - generate_eval_dataset
+    queue: default_queue
+
