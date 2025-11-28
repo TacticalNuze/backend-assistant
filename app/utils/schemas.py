@@ -21,8 +21,28 @@ WORKFLOW_REQUEST_EXAMPLES = {
             }
         }
     },
+    
+    "generate_eval_dataset":{
+        "summary": "Generate evaluation dataset",
+        "description": "Example for generating the evaluation dataset",
+        "value": {
+            "input": {
+                "client_id": "ragtest",
+                "project_id": "rag_evaluation_test",
+                "language": "en",
+                "num_queries": 20,
+                "chunks_per_query": 5,
+                "output_path": "eval_dataset.json",
+                "query_generation_prompt_key": "generate-query-from-chunk",
+                "ground_truth_prompt_key": "generate-ground-truth",
+                "embedding_model": "text-embedding-3-large",
+                "embedding_provider": "azure_openai",
+                "generate_rag_response": True,
+                "workflow_id": "generate_evaluation_dataset_001"
+            }
+        }
+    }
 }
-
 
 # OpenAPI examples for ChatRequest
 CHAT_REQUEST_EXAMPLES = {
@@ -44,6 +64,24 @@ CHAT_REQUEST_EXAMPLES = {
             }
         }
     },
+    "evaluate_rag": {
+        "summary": "Rag evaluation pipeline",
+        "description": "Example for evaluating the RAG responses",
+        "value": {
+            "input": {
+                "client_id": "ragtest",
+                "domain_id": "ragtest",
+                "input_text": "What is DXC's code of conduct main ideas?",
+                "language": "en",
+                "project_id": "rag_evaluation_test",
+                "session_id": "rag_evaluation_session_001",
+                "user_id": "user123",
+                "top_k": 5,
+                "limit": 10,
+                "workflow_id": "rag_evaluation_001"
+            }
+        }
+    }
 }
 
 
