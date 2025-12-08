@@ -18,6 +18,10 @@ class DatabaseService:
         from .vector_db import VectorDatabaseService
         self.vector_manager = VectorDatabaseService()
         
+        # Initialize document database service
+        from .doc_db import DocumentDatabaseService
+        self.document_manager = DocumentDatabaseService()
+        
         # Initialize storage manager (used by other steps; optional for vector search)
         from .storage import MinIOStorageManager
         self.storage_manager = MinIOStorageManager(
@@ -40,6 +44,13 @@ class DatabaseService:
             # Always initialize the vector manager (required for search)
             if getattr(self, "vector_manager", None):
                 await self.vector_manager.initialize()
+
+            # Initialize document database manager (optional, but recommended)
+            if getattr(self, "document_manager", None):
+                try:
+                    await self.document_manager.initialize()
+                except Exception as e:
+                    logger.warning(f"Document manager init failed (continuing): {e}")
 
             self.initialized = True
             return True
@@ -105,4 +116,6 @@ class DatabaseService:
             await self.storage_manager.close()
         if hasattr(self.vector_manager, 'close'):
             await self.vector_manager.close()
+        if hasattr(self, 'document_manager') and hasattr(self.document_manager, 'close'):
+            await self.document_manager.close()
         self.connected = False

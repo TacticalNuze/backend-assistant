@@ -9,7 +9,7 @@ and object storage (MinIO).
 from .storage import MinIOStorageManager
 from .store_results import StoreResults, get_store_results
 from .vector_db import  ChromaVectorProvider
-from .doc_db import ElasticsearchDocProvider
+from .doc_db import ElasticsearchDocProvider, DocumentDatabaseService
 from .models import VectorIndexConfig
 from .service import DatabaseService
 
@@ -25,7 +25,7 @@ __all__ = [
     
     # Document database
     "ElasticsearchDocProvider",
-    
+    "DocumentDatabaseService",
     
     # Data models
     "VectorIndexConfig",
