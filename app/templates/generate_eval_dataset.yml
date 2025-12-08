@@ -40,13 +40,27 @@ steps:
       - query_generation_prompt_key
     queue: default_queue
 
-  # Step 3: Process queries in batch
-  # For each query: search contexts, generate ground truth, and optionally RAG response
+  # Step 3: Search contexts for all queries
+  - step: search_contexts
+    pipeline_key: search_contexts_for_queries
+    inputs:
+      - generate_queries
+      - client_id
+      - project_id
+      - language
+      - chunks_per_query
+      - embedding_model
+      - embedding_provider
+    queue: io_queue
+
+  # Step 4: Process queries in batch
+  # For each query: generate ground truth and optionally RAG response
   # Processes all queries in batches instead of one-by-one
   - step: process_queries
     pipeline_key: process_eval_queries_batch
     inputs:
       - generate_queries
+      - search_contexts
       - client_id
       - project_id
       - language
@@ -58,14 +72,14 @@ steps:
       - rag_prompt_key
     queue: io_queue
 
-  # Step 4: Combine processed queries into final dataset
+  # Step 5: Combine processed queries into final dataset
   - step: combine_dataset
     pipeline_key: combine_eval_dataset
     inputs:
       - process_queries
     queue: default_queue
 
-  # Step 5: Save dataset to JSON file
+  # Step 6: Save dataset to JSON file
   - step: save_dataset_to_file
     pipeline_key: save_eval_dataset_to_file
     inputs:
@@ -77,7 +91,7 @@ steps:
       - chunks_per_query
     queue: io_queue
 
-  # Step 6: Save dataset to Langfuse
+  # Step 7: Save dataset to Langfuse
   - step: save_dataset_to_langfuse
     pipeline_key: save_eval_dataset_to_langfuse
     inputs:

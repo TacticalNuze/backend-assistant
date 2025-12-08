@@ -30,45 +30,6 @@ def get_input_hash(inputs: Dict[str, Any], project_name: str, prompt_config_src:
     return formatted_input_data, input_hash
 
 
-def run_async_safe(coro):
-    """
-    Safely run an async coroutine from both sync and async contexts.
-    
-    If called from an async context (event loop already running), it will
-    run the coroutine in a separate thread with its own event loop.
-    If called from a sync context, it will use asyncio.run().
-    
-    Args:
-        coro: The coroutine to run
-        
-    Returns:
-        The result of the coroutine
-    """
-    try:
-        # Try to get the current event loop
-        loop = asyncio.get_running_loop()
-        # If we get here, we're in an async context
-        # Run the coroutine in a separate thread with its own event loop
-        import concurrent.futures
-        import threading
-        
-        def run_in_thread():
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            try:
-                return new_loop.run_until_complete(coro)
-            finally:
-                new_loop.close()
-        
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(run_in_thread)
-            return future.result()
-    except RuntimeError:
-        # No event loop running, we're in a sync context
-        # Safe to use asyncio.run()
-        return asyncio.run(coro)
-
-
 class ParseDocuments:
     def __init__(self, inputs, project_name, prompt_config, pipeline_key):
         self.inputs = inputs
@@ -1335,7 +1296,7 @@ class SearchRelevantChunks:
             
             # Use the DatabaseService for consistency
             db_service = DatabaseService()
-            run_async_safe(db_service.initialize())
+            asyncio.run(db_service.initialize())
             
             # Get the ChromaDB provider
             chroma_provider = db_service.vector_manager.provider
@@ -1348,7 +1309,7 @@ class SearchRelevantChunks:
             logger.info(f"Searching in ChromaDB collection: chunks_{language}_{client_id}_{project_id}")
             
             # Use ChromaDB's built-in similarity search with custom embeddings
-            relevant_chunks = run_async_safe(
+            relevant_chunks = asyncio.run(
                 chroma_provider.similarity_search_with_custom_embeddings(
                     query_text=input_text,
                     client_id=client_id,
@@ -1380,7 +1341,7 @@ class SearchRelevantChunks:
                 logger.info(f"Sample chunk (similarity: {sample_chunk.get('similarity', 0):.4f}): {sample_chunk.get('text', '')[:100]}...")
             
             # Close the database service connection
-            run_async_safe(db_service.close())
+            asyncio.run(db_service.close())
             
             return {
                 "relevant_chunks": relevant_chunks,
@@ -1403,8 +1364,7 @@ class SearchRelevantChunks:
             
             # Close the database service connection in case of error
             try:
-                if 'db_service' in locals():
-                    run_async_safe(db_service.close())
+                asyncio.run(db_service.close())
             except:
                 pass  # Ignore errors when closing
             
@@ -1561,7 +1521,7 @@ class GetVectorReference:
                         logger.error(f"Traceback: {traceback.format_exc()}")
                         return []
                 
-                es_results = run_async_safe(_fetch_from_elasticsearch())
+                es_results = asyncio.run(_fetch_from_elasticsearch())
                 
                 # Add ES results to references
                 for doc in es_results:
@@ -1987,33 +1947,33 @@ class RetrieveRandomChunks:
         chroma_provider.base_collection_name = collection_name
         
         def _get_chunks_sync():
-            collection_name = chroma_provider._get_collection_name(client_id)
-            collection = chroma_provider.client.get_collection(collection_name)
-            total_count = collection.count()
-            if total_count == 0:
-                return []
-            
-            limit = min(num_chunks * 2, total_count)
-            results = collection.get(
-                limit=limit,
-                where={"project_id": project_id} if project_id else None
-            )
-            
-            chunks = []
-            if results.get("documents") and results.get("ids"):
-                for i, doc_text in enumerate(results["documents"]):
-                    chunk_id = results["ids"][i] if i < len(results["ids"]) else None
-                    metadata = results["metadatas"][i] if results.get("metadatas") and i < len(results["metadatas"]) else {}
-                    chunks.append({
-                        "text": doc_text,
-                        "chunk_id": chunk_id,
-                        "metadata": metadata
-                    })
-            
-            if len(chunks) > num_chunks:
-                chunks = random.sample(chunks, num_chunks)
-            
-            return chunks
+                collection_name = chroma_provider._get_collection_name(client_id)
+                collection = chroma_provider.client.get_collection(collection_name)
+                total_count = collection.count()
+                if total_count == 0:
+                    return []
+                
+                limit = min(num_chunks * 2, total_count)
+                results = collection.get(
+                    limit=limit,
+                    where={"project_id": project_id} if project_id else None
+                )
+                
+                chunks = []
+                if results.get("documents") and results.get("ids"):
+                    for i, doc_text in enumerate(results["documents"]):
+                        chunk_id = results["ids"][i] if i < len(results["ids"]) else None
+                        metadata = results["metadatas"][i] if results.get("metadatas") and i < len(results["metadatas"]) else {}
+                        chunks.append({
+                            "text": doc_text,
+                            "chunk_id": chunk_id,
+                            "metadata": metadata
+                        })
+                
+                if len(chunks) > num_chunks:
+                    chunks = random.sample(chunks, num_chunks)
+                
+                return chunks
         
         loop = asyncio.get_event_loop()
         chunks = await loop.run_in_executor(None, _get_chunks_sync)
@@ -2119,6 +2079,76 @@ class GenerateQueriesFromChunks:
             return []
 
 
+class SearchContextsForQueries:
+    """Search relevant chunks for multiple queries"""
+    
+    def __init__(self, inputs: Dict[str, Any], project_name: str, prompt_config_src: str, pipeline_key: str):
+        self.inputs = inputs
+        self.project_name = project_name
+        self.prompt_config_src = prompt_config_src
+        self.pipeline_key = pipeline_key
+    
+    def execute(self) -> Dict[str, Any]:
+        """Search contexts for all queries"""
+        # Get queries from previous step
+        generate_queries_input = self.inputs.get("generate_queries", [])
+        
+        # Handle different input formats
+        if isinstance(generate_queries_input, str):
+            queries = [generate_queries_input]
+        elif isinstance(generate_queries_input, list):
+            queries = [q for q in generate_queries_input if isinstance(q, str)]
+        else:
+            queries = []
+        
+        if not queries:
+            logger.warning("No queries provided for context search")
+            return {"search_results": {}}
+        
+        client_id = self.inputs.get("client_id")
+        project_id = self.inputs.get("project_id")
+        language = self.inputs.get("language", "en")
+        chunks_per_query = self.inputs.get("chunks_per_query", 5)
+        embedding_model = self.inputs.get("embedding_model", "text-embedding-3-large")
+        embedding_provider = self.inputs.get("embedding_provider", "azure_openai")
+        
+        logger.info(f"Searching contexts for {len(queries)} queries")
+        
+        # Search contexts for each query
+        search_results = {}
+        for query in queries:
+            try:
+                search_inputs = {
+                    "input_text": query,
+                    "client_id": client_id,
+                    "project_id": project_id,
+                    "language": language,
+                    "top_k": chunks_per_query,
+                    "embedding_model": embedding_model,
+                    "embedding_provider": embedding_provider
+                }
+                
+                search_operation = SearchRelevantChunks(
+                    inputs=search_inputs,
+                    project_name=self.project_name,
+                    prompt_config_src=self.prompt_config_src,
+                    pipeline_key="search_relevant_chunks"
+                )
+                
+                search_result = search_operation.execute()
+                search_results[query] = search_result
+                
+            except Exception as e:
+                logger.error(f"Error searching contexts for query '{query[:50]}...': {e}")
+                search_results[query] = {
+                    "relevant_chunks": [],
+                    "search_metadata": {"error": str(e)}
+                }
+        
+        logger.info(f"Completed context search for {len(search_results)} queries")
+        return {"search_results": search_results}
+
+
 class ProcessEvalQueriesBatch:
     """Process queries in batch: search contexts, generate ground truth, and optionally RAG response for multiple queries"""
     
@@ -2198,10 +2228,25 @@ class ProcessEvalQueriesBatch:
             
             logger.info(f"Processing batch {batch_start//batch_size + 1}: queries {batch_start+1}-{batch_end} of {len(queries)}")
             
+            # Get search results from inputs (from previous workflow step)
+            search_contexts_input = self.inputs.get("search_contexts", {})
+            # Extract the search_results dict from the step output
+            if isinstance(search_contexts_input, dict) and "search_results" in search_contexts_input:
+                search_results_input = search_contexts_input["search_results"]
+            else:
+                search_results_input = search_contexts_input
+            
             # Process each query in the batch
             batch_results = []
-            for query in batch_queries:
+            for idx, query in enumerate(batch_queries):
                 try:
+                    # Get search result for this query
+                    search_result = None
+                    if isinstance(search_results_input, dict):
+                        search_result = search_results_input.get(query)
+                    elif isinstance(search_results_input, list) and idx < len(search_results_input):
+                        search_result = search_results_input[idx]
+                    
                     result = await self._process_single_query(
                         query=query,
                         client_id=client_id,
@@ -2212,7 +2257,8 @@ class ProcessEvalQueriesBatch:
                         embedding_provider=embedding_provider,
                         ground_truth_prompt_key=ground_truth_prompt_key,
                         generate_rag_response=generate_rag_response,
-                        rag_prompt_key=rag_prompt_key
+                        rag_prompt_key=rag_prompt_key,
+                        search_results=search_result
                     )
                     batch_results.append(result)
                 except Exception as e:
@@ -2241,29 +2287,36 @@ class ProcessEvalQueriesBatch:
         embedding_provider: str,
         ground_truth_prompt_key: str,
         generate_rag_response: bool,
-        rag_prompt_key: str
+        rag_prompt_key: str,
+        search_results: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Process a single query"""
-        # Step 1: Search relevant chunks
-        search_inputs = {
-            "input_text": query,
-            "client_id": client_id,
-            "project_id": project_id,
-            "language": language,
-            "top_k": chunks_per_query,
-            "embedding_model": embedding_model,
-            "embedding_provider": embedding_provider
-        }
+        # Step 1: Get search results from input (from previous step) or use provided results
+        if search_results is None:
+            # Try to get from inputs (from previous workflow step)
+            search_results_input = self.inputs.get("search_contexts", {})
+            # search_results_input should be a dict mapping queries to their search results
+            # or a list of search results in the same order as queries
+            if isinstance(search_results_input, dict):
+                search_result = search_results_input.get(query, {})
+            elif isinstance(search_results_input, list):
+                # If it's a list, we need to find the matching query
+                # This is less ideal, but handle it
+                search_result = {}
+                for sr in search_results_input:
+                    if isinstance(sr, dict) and sr.get("query") == query:
+                        search_result = sr.get("search_result", {})
+                        break
+            else:
+                search_result = {}
+        else:
+            search_result = search_results
         
-        search_operation = SearchRelevantChunks(
-            inputs=search_inputs,
-            project_name=self.project_name,
-            prompt_config_src=self.prompt_config_src,
-            pipeline_key="search_relevant_chunks"
-        )
-        
-        search_result = search_operation.execute()
-        relevant_chunks = search_result.get("relevant_chunks", [])
+        # Extract relevant chunks from search result
+        if isinstance(search_result, dict):
+            relevant_chunks = search_result.get("relevant_chunks", [])
+        else:
+            relevant_chunks = []
         
         if not relevant_chunks:
             return {
@@ -2273,7 +2326,7 @@ class ProcessEvalQueriesBatch:
                 "ground_truth": "",
                 "response": ""
             }
-        
+            
         # Step 2: Generate ground truth
         context_texts = [chunk.get("text", "") for chunk in relevant_chunks if chunk.get("text")]
         contexts_combined = "\n\n".join(context_texts[:4000])
@@ -2433,9 +2486,9 @@ class ProcessEvalQuery:
                 rag_response = await llm_gateway.generate(
                     prompt_key=rag_prompt_key,
                     variables={"input_text": query, "contexts": contexts_combined},
-                    temperature=0.7,
-                    max_tokens=500
-                )
+                temperature=0.7,
+                max_tokens=500
+            )
                 response = str(rag_response).strip() if rag_response else ""
             except Exception as e:
                 logger.warning(f"Error generating RAG response: {e}")
@@ -2696,6 +2749,7 @@ pipeline_operations: Dict[str, Any] = {
     # Evaluation dataset operations
     "retrieve_random_chunks": RetrieveRandomChunks,
     "generate_queries_from_chunks": GenerateQueriesFromChunks,
+    "search_contexts_for_queries": SearchContextsForQueries,
     "process_eval_query": ProcessEvalQuery,
     "process_eval_queries_batch": ProcessEvalQueriesBatch,
     "combine_eval_dataset": CombineEvalDataset,
