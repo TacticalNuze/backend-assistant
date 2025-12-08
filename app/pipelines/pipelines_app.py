@@ -30,6 +30,45 @@ def get_input_hash(inputs: Dict[str, Any], project_name: str, prompt_config_src:
     return formatted_input_data, input_hash
 
 
+def run_async_safe(coro):
+    """
+    Safely run an async coroutine from both sync and async contexts.
+    
+    If called from an async context (event loop already running), it will
+    run the coroutine in a separate thread with its own event loop.
+    If called from a sync context, it will use asyncio.run().
+    
+    Args:
+        coro: The coroutine to run
+        
+    Returns:
+        The result of the coroutine
+    """
+    try:
+        # Try to get the current event loop
+        loop = asyncio.get_running_loop()
+        # If we get here, we're in an async context
+        # Run the coroutine in a separate thread with its own event loop
+        import concurrent.futures
+        import threading
+        
+        def run_in_thread():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                return new_loop.run_until_complete(coro)
+            finally:
+                new_loop.close()
+        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(run_in_thread)
+            return future.result()
+    except RuntimeError:
+        # No event loop running, we're in a sync context
+        # Safe to use asyncio.run()
+        return asyncio.run(coro)
+
+
 class ParseDocuments:
     def __init__(self, inputs, project_name, prompt_config, pipeline_key):
         self.inputs = inputs
@@ -1296,7 +1335,7 @@ class SearchRelevantChunks:
             
             # Use the DatabaseService for consistency
             db_service = DatabaseService()
-            asyncio.run(db_service.initialize())
+            run_async_safe(db_service.initialize())
             
             # Get the ChromaDB provider
             chroma_provider = db_service.vector_manager.provider
@@ -1309,7 +1348,7 @@ class SearchRelevantChunks:
             logger.info(f"Searching in ChromaDB collection: chunks_{language}_{client_id}_{project_id}")
             
             # Use ChromaDB's built-in similarity search with custom embeddings
-            relevant_chunks = asyncio.run(
+            relevant_chunks = run_async_safe(
                 chroma_provider.similarity_search_with_custom_embeddings(
                     query_text=input_text,
                     client_id=client_id,
@@ -1341,7 +1380,7 @@ class SearchRelevantChunks:
                 logger.info(f"Sample chunk (similarity: {sample_chunk.get('similarity', 0):.4f}): {sample_chunk.get('text', '')[:100]}...")
             
             # Close the database service connection
-            asyncio.run(db_service.close())
+            run_async_safe(db_service.close())
             
             return {
                 "relevant_chunks": relevant_chunks,
@@ -1364,7 +1403,8 @@ class SearchRelevantChunks:
             
             # Close the database service connection in case of error
             try:
-                asyncio.run(db_service.close())
+                if 'db_service' in locals():
+                    run_async_safe(db_service.close())
             except:
                 pass  # Ignore errors when closing
             
@@ -1521,7 +1561,7 @@ class GetVectorReference:
                         logger.error(f"Traceback: {traceback.format_exc()}")
                         return []
                 
-                es_results = asyncio.run(_fetch_from_elasticsearch())
+                es_results = run_async_safe(_fetch_from_elasticsearch())
                 
                 # Add ES results to references
                 for doc in es_results:
