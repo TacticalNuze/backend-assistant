@@ -30,6 +30,24 @@ def get_input_hash(inputs: Dict[str, Any], project_name: str, prompt_config_src:
     return formatted_input_data, input_hash
 
 
+def normalize_query(query: str) -> str:
+    """Normalize a query string for consistent matching.
+    
+    This function:
+    - Strips leading/trailing whitespace
+    - Replaces newlines and carriage returns with spaces
+    - Collapses multiple spaces into single space
+    
+    This ensures queries can be matched consistently even if they have
+    different whitespace formatting.
+    """
+    if not isinstance(query, str):
+        return str(query) if query else ""
+    normalized = query.strip().replace('\n', ' ').replace('\r', ' ')
+    normalized = ' '.join(normalized.split())
+    return normalized
+
+
 class ParseDocuments:
     def __init__(self, inputs, project_name, prompt_config, pipeline_key):
         self.inputs = inputs
@@ -2011,10 +2029,18 @@ class GenerateQueriesFromChunks:
             logger.warning("No chunks provided for query generation")
             return {"queries": [], "num_queries": 0}
         
-        return asyncio.run(self._generate_queries_async(
+        queries = asyncio.run(self._generate_queries_async(
             chunks=chunks[:num_queries],
             prompt_key=query_generation_prompt_key
         ))
+        
+        # Return in consistent format - list of queries
+        # This matches what SearchContextsForQueries and ProcessEvalQueriesBatch expect
+        if isinstance(queries, list):
+            return queries
+        else:
+            # Fallback if _generate_queries_async returns something else
+            return queries.get("queries", []) if isinstance(queries, dict) else []
     
     async def _generate_queries_async(self, chunks: List[Dict[str, Any]], prompt_key: str) -> Dict[str, Any]:
         """Async method to generate queries from chunks in batch"""
@@ -2060,7 +2086,9 @@ class GenerateQueriesFromChunks:
                     if line and (line[0].isdigit() or line.startswith('-')):
                         line = line.split('.', 1)[-1].strip()
                     if line and len(line) > 10:  # Valid question
-                        queries.append(line)
+                        # Normalize query for consistent matching
+                        line_normalized = normalize_query(line)
+                        queries.append(line_normalized)
                 
                 # If no questions found but response is long, treat entire response as one query
                 if not queries and len(response_text) > 10:
@@ -2115,11 +2143,19 @@ class SearchContextsForQueries:
         logger.info(f"Searching contexts for {len(queries)} queries")
         
         # Search contexts for each query
+        # Normalize queries and use normalized version as primary key for consistent matching
         search_results = {}
+        query_to_normalized = {}  # Map original query to normalized version
+        
         for query in queries:
             try:
+                # Normalize query for consistent matching
+                query_normalized = normalize_query(query)
+                query_to_normalized[query] = query_normalized
+                
+                logger.info(f"Searching contexts for query {len(search_results) + 1}/{len(queries)}: '{query[:80]}...' (normalized: '{query_normalized[:80]}...')")
                 search_inputs = {
-                    "input_text": query,
+                    "input_text": query,  # Use original query for search
                     "client_id": client_id,
                     "project_id": project_id,
                     "language": language,
@@ -2136,7 +2172,10 @@ class SearchContextsForQueries:
                 )
                 
                 search_result = search_operation.execute()
-                search_results[query] = search_result
+                # Store with normalized key as primary, but also store with original for backward compatibility
+                search_results[query_normalized] = search_result
+                if query != query_normalized:
+                    search_results[query] = search_result  # Also store with original for fallback
                 
             except Exception as e:
                 logger.error(f"Error searching contexts for query '{query[:50]}...': {e}")
@@ -2145,7 +2184,8 @@ class SearchContextsForQueries:
                     "search_metadata": {"error": str(e)}
                 }
         
-        logger.info(f"Completed context search for {len(search_results)} queries")
+        logger.info(f"Completed context search for {len(queries)} queries (stored {len(search_results)} search result entries)")
+        logger.debug(f"Sample normalized query keys (first 3): {list(search_results.keys())[:3]}")
         return {"search_results": search_results}
 
 
@@ -2221,6 +2261,16 @@ class ProcessEvalQueriesBatch:
         """Process queries in batches"""
         processed_results = []
         
+        # Get search results from inputs (from previous workflow step) - do this once before batches
+        search_contexts_input = self.inputs.get("search_contexts", {})
+        # Extract the search_results dict from the step output
+        if isinstance(search_contexts_input, dict) and "search_results" in search_contexts_input:
+            search_results_input = search_contexts_input["search_results"]
+        else:
+            search_results_input = search_contexts_input
+        
+        logger.info(f"Search results format: {type(search_results_input).__name__}, keys/items: {len(search_results_input) if isinstance(search_results_input, (dict, list)) else 'N/A'}")
+        
         # Process queries in batches
         for batch_start in range(0, len(queries), batch_size):
             batch_end = min(batch_start + batch_size, len(queries))
@@ -2228,52 +2278,191 @@ class ProcessEvalQueriesBatch:
             
             logger.info(f"Processing batch {batch_start//batch_size + 1}: queries {batch_start+1}-{batch_end} of {len(queries)}")
             
-            # Get search results from inputs (from previous workflow step)
-            search_contexts_input = self.inputs.get("search_contexts", {})
-            # Extract the search_results dict from the step output
-            if isinstance(search_contexts_input, dict) and "search_results" in search_contexts_input:
-                search_results_input = search_contexts_input["search_results"]
-            else:
-                search_results_input = search_contexts_input
-            
             # Process each query in the batch
             batch_results = []
-            for idx, query in enumerate(batch_queries):
+            for batch_idx, query in enumerate(batch_queries):
+                global_idx = batch_start + batch_idx  # Global index across all queries
+                
+                # Normalize query the same way as SearchContextsForQueries does
+                query_normalized = normalize_query(query)
+                
+                logger.info(f"[Query {global_idx + 1}/{len(queries)}] Processing: '{query[:80]}...' (normalized: '{query_normalized[:80]}...')")
+                logger.info(f"[Query {global_idx + 1}] Batch index: {batch_idx}, Global index: {global_idx}, Total queries: {len(queries)}")
+                
                 try:
                     # Get search result for this query
                     search_result = None
                     if isinstance(search_results_input, dict):
-                        search_result = search_results_input.get(query)
-                    elif isinstance(search_results_input, list) and idx < len(search_results_input):
-                        search_result = search_results_input[idx]
+                        # Try normalized version first (primary key from SearchContextsForQueries)
+                        search_result = search_results_input.get(query_normalized)
+                        if search_result:
+                            logger.info(f"[Query {global_idx + 1}] ✓ Found match using normalized query key")
+                            logger.debug(f"[Query {global_idx + 1}] Search result type: {type(search_result)}, has relevant_chunks: {isinstance(search_result, dict) and 'relevant_chunks' in search_result}")
+                        
+                        # Fallback to original query if normalized didn't match
+                        if search_result is None:
+                            search_result = search_results_input.get(query)
+                            if search_result:
+                                logger.info(f"[Query {global_idx + 1}] ✓ Found match using original query key")
+                                logger.debug(f"[Query {global_idx + 1}] Search result type: {type(search_result)}, has relevant_chunks: {isinstance(search_result, dict) and 'relevant_chunks' in search_result}")
+                        
+                        # Final fallback: iterate and compare normalized versions
+                        if search_result is None:
+                            logger.info(f"[Query {global_idx + 1}] Attempting iterative matching...")
+                            for key in search_results_input.keys():
+                                key_normalized = normalize_query(key)
+                                if key_normalized == query_normalized:
+                                    search_result = search_results_input[key]
+                                    logger.info(f"[Query {global_idx + 1}] ✓ Found match after normalizing and comparing")
+                                    logger.debug(f"[Query {global_idx + 1}] Matched key: '{key[:80]}...' (normalized: '{key_normalized[:80]}...')")
+                                    break
+                        
+                        if search_result is None:
+                            logger.warning(f"[Query {global_idx + 1}] ✗ Query not found in search_results dict")
+                            logger.warning(f"[Query {global_idx + 1}] Query (original): '{query}'")
+                            logger.warning(f"[Query {global_idx + 1}] Query (normalized): '{query_normalized}'")
+                            logger.warning(f"[Query {global_idx + 1}] Query length: {len(query)}, Normalized length: {len(query_normalized)}")
+                            if search_results_input:
+                                sample_keys = list(search_results_input.keys())[:5]
+                                logger.warning(f"[Query {global_idx + 1}] Sample search_result keys (first 5): {[k[:80] + '...' if len(k) > 80 else k for k in sample_keys]}")
+                                logger.warning(f"[Query {global_idx + 1}] Total search_results: {len(search_results_input)}")
+                            else:
+                                logger.error(f"[Query {global_idx + 1}] ✗ search_results_input dict is empty!")
+                    elif isinstance(search_results_input, list):
+                        # Use global index for list format
+                        if global_idx < len(search_results_input):
+                            search_result = search_results_input[global_idx]
+                            logger.info(f"[Query {global_idx + 1}] ✓ Found match using list index {global_idx}")
+                        else:
+                            logger.warning(f"[Query {global_idx + 1}] ✗ Global index {global_idx} out of range for search_results list (length: {len(search_results_input)})")
+                    else:
+                        logger.error(f"[Query {global_idx + 1}] ✗ Unexpected search_results_input type: {type(search_results_input)}")
                     
-                    result = await self._process_single_query(
-                        query=query,
-                        client_id=client_id,
-                        project_id=project_id,
-                        language=language,
-                        chunks_per_query=chunks_per_query,
-                        embedding_model=embedding_model,
-                        embedding_provider=embedding_provider,
-                        ground_truth_prompt_key=ground_truth_prompt_key,
-                        generate_rag_response=generate_rag_response,
-                        rag_prompt_key=rag_prompt_key,
-                        search_results=search_result
-                    )
-                    batch_results.append(result)
+                    if search_result is None:
+                        logger.error(f"[Query {global_idx + 1}] ✗ No search result found for query: '{query[:50]}...'")
+                        error_result = {
+                            "query": query,
+                            "error": "No search result found",
+                            "contexts": [],
+                            "ground_truth": "",
+                            "response": ""
+                        }
+                        batch_results.append(error_result)
+                        logger.info(f"[Query {global_idx + 1}] Added error result to batch (batch_results length: {len(batch_results)})")
+                        continue
+                    
+                    # Verify search_result structure
+                    if isinstance(search_result, dict):
+                        relevant_chunks = search_result.get("relevant_chunks", [])
+                        logger.info(f"[Query {global_idx + 1}] Search result has {len(relevant_chunks)} relevant chunks")
+                        if not relevant_chunks:
+                            logger.warning(f"[Query {global_idx + 1}] ⚠ Search result has no relevant_chunks!")
+                    else:
+                        logger.warning(f"[Query {global_idx + 1}] ⚠ Search result is not a dict: {type(search_result)}")
+                    
+                    # Process single query with proper error handling
+                    try:
+                        logger.info(f"[Query {global_idx + 1}] Calling _process_single_query...")
+                        result = await self._process_single_query(
+                            query=query,
+                            client_id=client_id,
+                            project_id=project_id,
+                            language=language,
+                            chunks_per_query=chunks_per_query,
+                            embedding_model=embedding_model,
+                            embedding_provider=embedding_provider,
+                            ground_truth_prompt_key=ground_truth_prompt_key,
+                            generate_rag_response=generate_rag_response,
+                            rag_prompt_key=rag_prompt_key,
+                            search_results=search_result
+                        )
+                        
+                        # Ensure result has all required fields
+                        if not isinstance(result, dict):
+                            logger.error(f"[Query {global_idx + 1}] ✗ Result is not a dict: {type(result)}")
+                            result = {"query": query, "contexts": [], "ground_truth": "", "response": "", "error": "Invalid result format"}
+                        
+                        # Log detailed result summary
+                        has_ground_truth = bool(result.get("ground_truth"))
+                        has_response = bool(result.get("response"))
+                        has_error = bool(result.get("error"))
+                        has_contexts = bool(result.get("contexts"))
+                        contexts_count = len(result.get("contexts", []))
+                        ground_truth_len = len(result.get("ground_truth", ""))
+                        response_len = len(result.get("response", ""))
+                        
+                        logger.info(f"[Query {global_idx + 1}] ========== RESULT SUMMARY ==========")
+                        logger.info(f"[Query {global_idx + 1}] Query: '{query[:60]}...'")
+                        logger.info(f"[Query {global_idx + 1}] Contexts: {contexts_count} chunks {'✓' if has_contexts else '✗'}")
+                        logger.info(f"[Query {global_idx + 1}] Ground truth: {ground_truth_len} chars {'✓' if has_ground_truth else '✗'}")
+                        logger.info(f"[Query {global_idx + 1}] RAG response: {response_len} chars {'✓' if has_response else '✗'}")
+                        logger.info(f"[Query {global_idx + 1}] Error: {'✗' if has_error else '✓'}")
+                        logger.info(f"[Query {global_idx + 1}] =====================================")
+                        
+                        # Ensure query is preserved in result
+                        result["query"] = query
+                        batch_results.append(result)
+                        logger.info(f"[Query {global_idx + 1}] ✓ Added result to batch (batch_results length: {len(batch_results)})")
+                    except Exception as inner_e:
+                        logger.error(f"[Query {global_idx + 1}] ✗ Error in _process_single_query: {inner_e}")
+                        import traceback
+                        logger.error(f"[Query {global_idx + 1}] Traceback: {traceback.format_exc()}")
+                        error_result = {
+                            "query": query,
+                            "error": f"Processing error: {str(inner_e)}",
+                            "contexts": [],
+                            "ground_truth": "",
+                            "response": ""
+                        }
+                        batch_results.append(error_result)
+                        logger.info(f"[Query {global_idx + 1}] Added error result to batch (batch_results length: {len(batch_results)})")
                 except Exception as e:
-                    logger.error(f"Error processing query '{query[:50]}...': {e}")
-                    batch_results.append({
+                    logger.error(f"[Query {global_idx + 1}] ✗ Error processing query: {e}")
+                    import traceback
+                    logger.error(f"[Query {global_idx + 1}] Traceback: {traceback.format_exc()}")
+                    error_result = {
                         "query": query,
                         "error": str(e),
                         "contexts": [],
                         "ground_truth": "",
                         "response": ""
-                    })
+                    }
+                    batch_results.append(error_result)
+                    logger.info(f"[Query {global_idx + 1}] Added error result to batch (batch_results length: {len(batch_results)})")
+            
+            # Log batch completion
+            batch_ground_truths = sum(1 for r in batch_results if r.get("ground_truth"))
+            batch_responses = sum(1 for r in batch_results if r.get("response"))
+            logger.info(f"Batch {batch_start//batch_size + 1} completed: {len(batch_results)} queries, {batch_ground_truths} with ground truth, {batch_responses} with RAG response")
             
             processed_results.extend(batch_results)
         
-        logger.info(f"Processed {len(processed_results)} queries in total")
+        # Summary statistics
+        total_queries = len(processed_results)
+        queries_with_ground_truth = sum(1 for r in processed_results if r.get("ground_truth"))
+        queries_with_response = sum(1 for r in processed_results if r.get("response"))
+        queries_with_errors = sum(1 for r in processed_results if r.get("error"))
+        queries_with_contexts = sum(1 for r in processed_results if r.get("contexts"))
+        
+        logger.info("=" * 80)
+        logger.info(f"BATCH PROCESSING SUMMARY:")
+        logger.info(f"  Total queries processed: {total_queries}")
+        logger.info(f"  Queries with contexts: {queries_with_contexts}/{total_queries}")
+        logger.info(f"  Queries with ground truth: {queries_with_ground_truth}/{total_queries}")
+        logger.info(f"  Queries with RAG response: {queries_with_response}/{total_queries}")
+        logger.info(f"  Queries with errors: {queries_with_errors}/{total_queries}")
+        logger.info(f"  generate_rag_response flag: {generate_rag_response}")
+        
+        # Log sample of results for debugging
+        if processed_results:
+            sample_result = processed_results[0]
+            logger.info(f"  Sample result keys: {list(sample_result.keys())}")
+            logger.info(f"  Sample result has ground_truth: {bool(sample_result.get('ground_truth'))}")
+            logger.info(f"  Sample result has response: {bool(sample_result.get('response'))}")
+            logger.info(f"  Sample result has contexts: {bool(sample_result.get('contexts'))}")
+        
+        logger.info("=" * 80)
+        
         return {"processed_queries": processed_results}
     
     async def _process_single_query(
@@ -2313,12 +2502,14 @@ class ProcessEvalQueriesBatch:
             search_result = search_results
         
         # Extract relevant chunks from search result
+        # search_result should be a dict with "relevant_chunks" key (from SearchRelevantChunks.execute())
         if isinstance(search_result, dict):
             relevant_chunks = search_result.get("relevant_chunks", [])
         else:
             relevant_chunks = []
         
         if not relevant_chunks:
+            logger.warning(f"No contexts retrieved for query: {query[:50]}...")
             return {
                 "query": query,
                 "error": "No contexts retrieved",
@@ -2326,44 +2517,120 @@ class ProcessEvalQueriesBatch:
                 "ground_truth": "",
                 "response": ""
             }
-            
-        # Step 2: Generate ground truth
-        context_texts = [chunk.get("text", "") for chunk in relevant_chunks if chunk.get("text")]
-        contexts_combined = "\n\n".join(context_texts[:4000])
+        
+        # Step 2: Extract context texts from relevant chunks
+        # Each chunk should have a "text" field (from SearchRelevantChunks)
+        context_texts = []
+        for chunk in relevant_chunks:
+            chunk_text = chunk.get("text", "")
+            if chunk_text:
+                context_texts.append(chunk_text)
+        
+        # Combine contexts (limit to 4000 chars to avoid token limits)
+        contexts_combined = "\n\n".join(context_texts)
+        if len(contexts_combined) > 4000:
+            # Truncate if too long
+            contexts_combined = contexts_combined[:4000] + "..."
+        
+        logger.info(f"Extracted {len(context_texts)} contexts for query '{query[:50]}...' (total length: {len(contexts_combined)} chars)")
         
         llm_gateway = LLMGateway()
         ground_truth = ""
+        
+        # Step 2: Generate ground truth (always attempt this)
+        logger.info(f"[Ground Truth] ========== STARTING GROUND TRUTH GENERATION ==========")
+        logger.info(f"[Ground Truth] Query: '{query[:80]}...'")
+        logger.info(f"[Ground Truth] Contexts: {len(context_texts)} chunks, {len(contexts_combined)} total chars")
+        logger.info(f"[Ground Truth] Prompt key: {ground_truth_prompt_key}")
+        logger.info(f"[Ground Truth] Variables: query length={len(query)}, contexts length={len(contexts_combined)}")
+        
         try:
+            logger.info(f"[Ground Truth] Calling llm_gateway.generate()...")
             ground_truth_response = await llm_gateway.generate(
                 prompt_key=ground_truth_prompt_key,
                 variables={"query": query, "contexts": contexts_combined},
                 temperature=0.3,
                 max_tokens=500
             )
+            
+            logger.info(f"[Ground Truth] LLM call completed. Response type: {type(ground_truth_response)}")
+            logger.debug(f"[Ground Truth] Raw response (first 200 chars): {str(ground_truth_response)[:200] if ground_truth_response else 'None'}...")
+            
             ground_truth = str(ground_truth_response).strip() if ground_truth_response else ""
+            if ground_truth:
+                logger.info(f"✓ [Ground Truth] Successfully generated: {len(ground_truth)} chars")
+                logger.info(f"[Ground Truth] First 150 chars: {ground_truth[:150]}...")
+            else:
+                logger.warning(f"⚠ [Ground Truth] Response was empty or None")
+                logger.warning(f"[Ground Truth] Raw response type: {type(ground_truth_response)}")
+                logger.warning(f"[Ground Truth] Raw response value: {repr(ground_truth_response)[:200]}")
         except Exception as e:
-            logger.warning(f"Error generating ground truth for query: {e}")
+            logger.error(f"✗ [Ground Truth] Exception during generation: {e}")
+            import traceback
+            logger.error(f"[Ground Truth] Traceback: {traceback.format_exc()}")
+            ground_truth = ""  # Ensure it's empty on error
+        
+        logger.info(f"[Ground Truth] Final ground_truth length: {len(ground_truth)} chars")
+        logger.info(f"[Ground Truth] ========== GROUND TRUTH GENERATION COMPLETE ==========")
         
         # Step 3: Optionally generate RAG response
         response = ""
+        logger.info(f"[RAG Response] ========== STARTING RAG RESPONSE GENERATION ==========")
+        logger.info(f"[RAG Response] generate_rag_response flag: {generate_rag_response}")
+        logger.info(f"[RAG Response] Query: '{query[:80]}...'")
+        logger.info(f"[RAG Response] Contexts: {len(context_texts)} chunks, {len(contexts_combined)} total chars")
+        
         if generate_rag_response:
             try:
+                logger.info(f"[RAG Response] Prompt key: {rag_prompt_key}")
+                logger.info(f"[RAG Response] Variables: input_text length={len(query)}, contexts length={len(contexts_combined)}")
+                logger.info(f"[RAG Response] Calling llm_gateway.generate()...")
+                
                 rag_response = await llm_gateway.generate(
                     prompt_key=rag_prompt_key,
                     variables={"input_text": query, "contexts": contexts_combined},
                     temperature=0.7,
                     max_tokens=500
                 )
+                
+                logger.info(f"[RAG Response] LLM call completed. Response type: {type(rag_response)}")
+                logger.debug(f"[RAG Response] Raw response (first 200 chars): {str(rag_response)[:200] if rag_response else 'None'}...")
+                
                 response = str(rag_response).strip() if rag_response else ""
+                if response:
+                    logger.info(f"✓ [RAG Response] Successfully generated: {len(response)} chars")
+                    logger.info(f"[RAG Response] First 150 chars: {response[:150]}...")
+                else:
+                    logger.warning(f"⚠ [RAG Response] Response was empty or None")
+                    logger.warning(f"[RAG Response] Raw response type: {type(rag_response)}")
+                    logger.warning(f"[RAG Response] Raw response value: {repr(rag_response)[:200]}")
             except Exception as e:
-                logger.warning(f"Error generating RAG response: {e}")
+                logger.error(f"✗ [RAG Response] Exception during generation: {e}")
+                import traceback
+                logger.error(f"[RAG Response] Traceback: {traceback.format_exc()}")
+                response = ""  # Ensure it's empty on error
+        else:
+            logger.info(f"[RAG Response] Skipping RAG response generation (generate_rag_response=False)")
         
-        return {
+        logger.info(f"[RAG Response] Final response length: {len(response)} chars")
+        logger.info(f"[RAG Response] ========== RAG RESPONSE GENERATION COMPLETE ==========")
+        
+        # Build final result
+        result = {
             "query": query,
             "contexts": context_texts,
             "ground_truth": ground_truth,
             "response": response
         }
+        
+        logger.info(f"[_process_single_query] ========== FINAL RESULT ==========")
+        logger.info(f"[_process_single_query] Query: '{query[:60]}...'")
+        logger.info(f"[_process_single_query] Contexts: {len(context_texts)} chunks")
+        logger.info(f"[_process_single_query] Ground truth: {len(ground_truth)} chars {'✓' if ground_truth else '✗'}")
+        logger.info(f"[_process_single_query] RAG response: {len(response)} chars {'✓' if response else '✗'}")
+        logger.info(f"[_process_single_query] ==================================")
+        
+        return result
 
 
 class ProcessEvalQuery:
