@@ -32,6 +32,7 @@ steps:
     queue: io_queue
 
   # Step 2: Generate queries from chunks using prompt-based step
+  # Returns: list of query strings
   - step: generate_queries
     pipeline_key: generate_queries_from_chunks
     inputs:
@@ -41,6 +42,10 @@ steps:
     queue: default_queue
 
   # Step 3: Search contexts for all queries
+  # This step searches for relevant chunks for each generated query using SearchRelevantChunks
+  # Similar to how vector_inference.yml uses search_relevant_chunks step
+  # Input: generate_queries (list of query strings)
+  # Returns: {"search_results": {query1: {relevant_chunks: [...], search_metadata: {...}}, ...}}
   - step: search_contexts
     pipeline_key: search_contexts_for_queries
     inputs:
@@ -54,8 +59,15 @@ steps:
     queue: io_queue
 
   # Step 4: Process queries in batch
-  # For each query: generate ground truth and optionally RAG response
+  # For each query: use retrieved contexts from search_contexts step to:
+  #   1. Extract context texts from relevant_chunks
+  #   2. Generate ground truth using ground_truth_prompt_key with query + contexts
+  #   3. Optionally generate RAG response using rag_prompt_key with query + contexts
   # Processes all queries in batches instead of one-by-one
+  # Inputs:
+  #   - generate_queries: list of query strings
+  #   - search_contexts: dict with search_results mapping queries to their relevant_chunks
+  # Returns: {"processed_queries": [{query, contexts, ground_truth, response}, ...]}
   - step: process_queries
     pipeline_key: process_eval_queries_batch
     inputs:
