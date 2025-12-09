@@ -599,8 +599,10 @@ class LangfusePromptManager:
         
         if pipeline_key == "run-vector-rag":
             # Transform inputs for naive RAG inference
-            # Get relevant chunks from search_relevant_chunks
+            # Get relevant chunks from search_relevant_chunks (preferred) or contexts (fallback for eval workflows)
             search_results = transformed.get("search_relevant_chunks", {})
+            contexts_direct = transformed.get("contexts", "")
+            
             if isinstance(search_results, dict):
                 # The chunks are directly in the top level, not nested under 'response'
                 chunks = search_results.get("relevant_chunks", [])
@@ -615,11 +617,20 @@ class LangfusePromptManager:
                     transformed["relevant_chunks"] = relevant_chunks_text.strip()
                     logger.debug(f"Transformed search_relevant_chunks to relevant_chunks ({len(relevant_chunks_text)} chars)")
                 else:
-                    transformed["relevant_chunks"] = "No relevant context found."
-                    logger.warning("No chunks found in search_relevant_chunks")
+                    # Fallback to contexts if provided (for eval dataset workflows)
+                    if contexts_direct:
+                        transformed["relevant_chunks"] = contexts_direct
+                        logger.debug(f"Using contexts directly as relevant_chunks ({len(contexts_direct)} chars)")
+                    else:
+                        transformed["relevant_chunks"] = "No relevant context found."
+                        logger.warning("No chunks found in search_relevant_chunks and no contexts provided")
+            elif contexts_direct:
+                # If search_relevant_chunks is not available but contexts is provided (eval dataset workflow)
+                transformed["relevant_chunks"] = contexts_direct
+                logger.debug(f"Using contexts directly as relevant_chunks (search_relevant_chunks not found, {len(contexts_direct)} chars)")
             else:
                 transformed["relevant_chunks"] = "No relevant context found."
-                logger.warning("search_relevant_chunks is not a valid dict")
+                logger.warning("search_relevant_chunks is not a valid dict and no contexts provided")
 
             # Get chat history from fetch_chat_history
             chat_history = transformed.get("fetch_chat_history", {})
